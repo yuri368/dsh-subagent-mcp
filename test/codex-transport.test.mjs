@@ -8,6 +8,18 @@ import {WebSocketServer} from 'ws';
 import {openNativeCodexSocket} from '../src/codex-transport.mjs';
 import {temporaryDirectory} from '../src/platform.mjs';
 
+test('missing native daemon reports the proxy diagnostic instead of socket hang up', {timeout:10000}, async t => {
+  const root=mkdtempSync(join(temporaryDirectory(),'dsh-proxy-failure-'));
+  t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const fake=join(root,'missing-daemon.mjs');
+  writeFileSync(fake,"process.stderr.write('failed to connect to app-server-control.sock: daemon unavailable\\n');process.exitCode=1;");
+  const socket=openNativeCodexSocket({spec:[process.execPath,fake]});
+  const error=await new Promise(resolve=>socket.once('error',resolve));
+  assert.match(error.message,/proxy exited \(1\)/);
+  assert.match(error.message,/app-server-control.sock: daemon unavailable/);
+  socket.terminate();
+});
+
 test('closing the native connection closes its proxy while leaving the daemon available', {timeout: 10000}, async () => {
   const root = mkdtempSync(join(temporaryDirectory(), 'dsh-proxy-'));
   const fake = join(root, 'proxy.mjs'), pidFile = join(root, 'proxy.pid');
