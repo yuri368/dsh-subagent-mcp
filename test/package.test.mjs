@@ -14,7 +14,7 @@ test(`packed ${service} installation survives cache removal, rolls back failed u
   const root = mkdtempSync(join(temporaryDirectory(), 'dsh-package-'));
   const folder = join(root, 'User space 雪 & data'); mkdirSync(folder);
   const config = join(folder, 'config'), state = join(folder, 'state');
-  const codexState = join(folder, 'codex-mcp.json'), failOnce = join(folder, 'fail-once');
+  const codexState = join(folder, 'codex-home/config.toml');
   const launches = join(folder, 'launches.json');
   const dsh = join(folder, 'dsh.mjs'), codex = join(folder, 'codex.mjs');
   const terminal = join(folder, 'terminal.mjs');
@@ -26,12 +26,13 @@ if(process.argv.includes('--patch'))createInterface({input:process.stdin}).on('l
 });\n`);
   writeFileSync(codex, `import {readFileSync,writeFileSync,existsSync,unlinkSync} from 'node:fs';
 import {WebSocketServer} from ${JSON.stringify(import.meta.resolve('ws'))};
-const a=process.argv.slice(2), path=${JSON.stringify(codexState)}, fail=${JSON.stringify(failOnce)};
+const a=process.argv.slice(2), path=${JSON.stringify(codexState)};
 if(a[0]==='--version')console.log('codex-cli 0.158.0');
-else if(a[0]==='mcp'&&a[1]==='add'){
- if(existsSync(fail)){unlinkSync(fail);console.error('registration fixture failure');process.exit(2);}
- const i=a.indexOf('--');writeFileSync(path,JSON.stringify({transport:{command:a[i+1],args:a.slice(i+2)}}));
-}else if(a[0]==='mcp'&&a[1]==='list')console.log(JSON.stringify(existsSync(path)?[{name:'dsh_subagent',...JSON.parse(readFileSync(path,'utf8'))}]:[]));
+else if(a[0]==='mcp'&&a[1]==='list'){
+ const text=existsSync(path)?readFileSync(path,'utf8'):'';
+ const command=text.match(/^command = (.+)$/m), args=text.match(/^args = (.+)$/m);
+ console.log(JSON.stringify(command&&args?[{name:'dsh_subagent',transport:{command:JSON.parse(command[1]),args:JSON.parse(args[1])}}]:[]));
+}
 else if(a[0]==='mcp'&&a[1]==='remove')unlinkSync(path);
 else if(a[0]==='app-server'&&a[1]==='daemon'&&a[2]==='version')console.log(JSON.stringify({status:'running',managedCodexVersion:'0.158.0'}));
 else if(a[0]==='app-server'){
@@ -81,14 +82,25 @@ else process.exit(3);
       assert.equal(existsSync(launches), false, 'Repeating installation must return to the terminal.');
     }
     assert.equal(JSON.parse(run(installed, 'doctor', '--json')).ok, true);
-    writeFileSync(failOnce, '');
+    const healthyCodexConfig = readFileSync(codexState, 'utf8');
+    // A genuinely invalid env value fails during actual registration, after new
+    // service activation, and
+    // verifies the complete TOML/record/skill rollback instead of a dead CLI stub.
+    const customCodexConfig = 'model = "gpt-6-sol"\n' + healthyCodexConfig
+      .replace(/\[mcp_servers\.dsh_subagent\.env\][\s\S]*$/, '')
+      + 'startup_timeout_sec = 300\ntool_timeout_sec = 3600\nenv_vars = ["CUSTOM_TOKEN"]\nmode = "desktop-message"\n'
+      + 'env = { CUSTOM = "preserved", INVALID_VALUE = 123 }\n';
+    writeFileSync(codexState, customCodexConfig);
     assert.throws(() => run(entry, 'setup', '--service', service, '--no-install-deps'), error => {
-      assert.match(error.stderr, /registration fixture failure/);
+      assert.match(error.stderr, /Invalid Codex MCP registration shape/);
       assert.match(error.stderr, /The previous installation was restored/, error.stdout + error.stderr);
       return true;
     });
     assert.deepEqual(JSON.parse(readFileSync(join(config, 'installation.json'), 'utf8')), record);
+    assert.equal(readFileSync(codexState, 'utf8'), customCodexConfig, 'Rollback must restore every custom TOML byte.');
+    assert.equal(realpathSync(join(env.CODEX_HOME, 'skills/dsh-subagent')), realpathSync(join(record.root, 'skills/dsh-subagent')), 'Rollback must retain the prior skill target.');
     assert.equal(JSON.parse(run(installed, 'status', '--json')).running, true);
+    writeFileSync(codexState, healthyCodexConfig);
     rmSync(cache, {recursive: true});
     run(installed, 'stop'); run(installed, 'start');
     assert.equal(JSON.parse(run(installed, 'doctor', '--json')).ok, true);

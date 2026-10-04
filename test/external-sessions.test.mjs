@@ -10,20 +10,22 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {makeServer} from '../src/server.mjs';
 
-async function setup(t,{running=false,fast=false,rejectPrompt=false}={}) {
+async function setup(t,{running=false,fast=false,rejectPrompt=false,turnNumbers=true,outline=false,deferPrompt=false}={}) {
   const dir=mkdtempSync(join(tmpdir(),'dsh-external-test-'));
   const id='session-a340bf6c-215c-4578-a518-ec9d3eed4afb';
-  const records=[],calls=[],streams=new Set();let seq=0,queue=[];
+  const records=[],calls=[],streams=new Set();let seq=0,queue=[],turn=1;
   const values={title:'Existing session',agentPreset:'standard',permissions:{currentValue:'read-only'},modelSelection:{next:{provider:'test',model:'test-model',reasoningEffort:'high'}}};
   const push=(endpoint,value)=>{for(const s of streams)if(s.endpoint===endpoint&&s.socket.readyState===1)s.socket.send(JSON.stringify({type:'item',streamId:s.streamId,value}));};
-  const event=(type,data)=>{const frame={type:'event',event:{seq:seq++,type,data,time:Date.now()}};records.push(frame);push('session/follow',frame);};
+  const event=(type,data)=>{const frame={type:'event',event:{seq:seq++,type,data,time:Date.now()}};records.push(frame);push('session/follow',frame);return frame;};
   const status=value=>{running=value;push('$events',{type:'emit',event:'api-session/status',args:[id,value]});};
-  const finish=(answer,kind='completed')=>{event('assistant/message',{message:{content:[{type:'text',text:answer}]}});event('turn/end',{reason:{kind}});status(false);};
+  const turnData=()=>turnNumbers?{turn}:{};
+  const finish=(answer,kind='completed')=>{event('assistant/message',{...turnData(),message:{content:[{type:'text',text:answer}]}});event('turn/end',{...turnData(),reason:{kind}});status(false);};
   const begin=request=>{
     queue=queue.filter(item=>item.rpcId!==request.requestId);push('session/control',{type:'queue',sessionId:id,items:queue});
-    status(true);event('turn/start',{});event('user/message',{source:{rpcId:request.requestId},content:request.content});
+    status(true);turn++;event('turn/start',turnData());event('user/message',{source:{kind:'user',rpcId:request.requestId},content:request.content});
   };
-  if(running)event('turn/start',{});else finish('Prior answer');
+  event('turn/start',turnData());if(!running)finish('Prior answer');
+  if(outline)values.turnOutline=[{turn,seq:0,prompt:'',response:''}];
   const server=createServer(async(req,res)=>{
     if(req.url==='/?token=test-secret'){res.writeHead(303,{'set-cookie':'dsh-auth=test-cookie; HttpOnly','location':'/'});res.end();return;}
     if(req.headers.cookie!=='dsh-auth=test-cookie'){res.writeHead(401);res.end();return;}
@@ -34,8 +36,9 @@ async function setup(t,{running=false,fast=false,rejectPrompt=false}={}) {
       if(rejectPrompt){res.setHeader('content-type','application/json');res.end(JSON.stringify({result:{ok:false,error:{code:'session/model-unavailable',message:'No model'}}}));return;}
       assert.equal(args.request.sessionId,id);
       const request=args.request;
-      if(running){queue.push({id:request.requestId,rpcId:request.requestId});push('session/control',{type:'queue',sessionId:id,items:queue});}
-      else {begin(request);if(fast)finish('Fast reply');}
+      if(running&&request.mode==='steer')event('user/message',{source:{kind:'user',rpcId:request.requestId},content:request.content});
+      else if(running){queue.push({id:request.requestId,rpcId:request.requestId});push('session/control',{type:'queue',sessionId:id,items:queue});}
+      else if(!deferPrompt){begin(request);if(fast)finish('Fast reply');}
       value={accepted:true};
     } else if(method==='session/page'){value={records:records.filter(x=>x.event.seq<args.request.beforeSeq&&x.event.seq<=args.request.throughSeq),hasMore:false};}
     else if(method==='session/cancel'){event('turn/end',{reason:{kind:'cancelled'}});status(false);value={accepted:true};}
@@ -111,8 +114,9 @@ test('a reply before the prompt receipt is not overwritten by starting state',as
 
 test('restart reattaches without replay and close leaves external work running',async t=>{
   const f=await setup(t,{running:true});const a=await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  const execution=f.manager.get(f.id).execution_id;
   await f.restart();assert.equal(f.manager.get(f.id).status,'running');
-  await f.manager.external.status(f.id);f.finish('After restart');
+  await f.manager.external.status(f.id);assert.equal(f.manager.get(f.id).execution_id,execution);f.finish('After restart');
   const result=await f.manager.wait(f.id,2);assert.equal(result.answer,'After restart');
   f.status(true);await f.manager.external.status(f.id);
   await f.manager.close(f.id);assert.equal(f.manager.get(f.id).status,'closed');
@@ -183,4 +187,67 @@ test('a bridge failure without a turn result stays an error when observed again'
   assert.equal(status.status,'error');assert.equal(status.error,'DSH Web connection closed');
   const runtime=f.manager.external.live.get(f.id);const closed=f.manager.get(f.id);closed.status='closed';f.manager.save(closed);
   f.manager.external.settle(f.id,runtime);assert.equal(f.manager.get(f.id).status,'closed');
+});
+
+test('browser-origin turns get distinct stable executions without bridge prompt IDs',async t=>{
+  const f=await setup(t);await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  const initial=f.manager.get(f.id);assert.equal(initial.execution_identity_state,'confirmed');assert.equal(initial.web_turn,1);
+  f.begin({requestId:'browser-native-a',content:[{type:'text',text:'From browser'}]});f.finish('Browser answer');
+  await f.manager.external.status(f.id);
+  await f.manager.wait(f.id,2);const first=f.manager.get(f.id);
+  assert.equal(first.web_turn,2);assert.notEqual(first.execution_id,initial.execution_id);assert.equal(first.request_id,undefined);
+  f.begin({requestId:'browser-native-b',content:[{type:'text',text:'Another browser turn'}]});f.finish('Second browser answer');
+  await f.manager.external.status(f.id);
+  await f.manager.wait(f.id,2);const second=f.manager.get(f.id);
+  assert.equal(second.web_turn,3);assert.notEqual(second.execution_id,first.execution_id);
+  await f.restart();await f.manager.external.status(f.id);
+  assert.equal(f.manager.get(f.id).execution_id,second.execution_id);
+  assert.equal(f.calls.some(x=>x.method==='session/prompt'),false);
+});
+
+test('duplicate start events cannot rewind execution or erase a settled answer',async t=>{
+  const f=await setup(t);await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  f.begin({requestId:'browser',content:[]});f.finish('Keep this answer');await f.manager.external.status(f.id);await f.manager.wait(f.id,2);
+  const before=f.manager.get(f.id),runtime=f.manager.external.live.get(f.id);
+  f.manager.external.history(f.id,runtime,{type:'event',event:{type:'turn/start',seq:0,data:{turn:1}}});
+  const after=f.manager.get(f.id);assert.equal(after.execution_id,before.execution_id);assert.equal(after.answer,'Keep this answer');assert.equal(after.status,'completed');
+});
+
+test('an idle bridge submission has unknown execution until the host starts its turn',async t=>{
+  const f=await setup(t,{deferPrompt:true});await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  const old=f.manager.get(f.id).execution_id;
+  const sent=await f.manager.external.send(f.id,'Delayed start');
+  assert.equal(sent.execution_identity_state,'unknown');assert.equal(sent.execution_id,undefined);assert.equal(sent.pending_requests.length,1);
+  f.begin(f.calls.find(x=>x.method==='session/prompt').args.request);f.finish('Later');await f.manager.wait(f.id,2);
+  const done=f.manager.get(f.id);assert.equal(done.execution_identity_state,'confirmed');assert.notEqual(done.execution_id,old);assert.deepEqual(done.pending_requests,[]);
+});
+
+test('queue admission does not fabricate the future execution or use requestId as a turn',async t=>{
+  const f=await setup(t,{running:true});await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  const old=f.manager.get(f.id).execution_id;
+  const sent=await f.manager.external.send(f.id,'Queue future');
+  assert.equal(sent.execution_id,old);assert.equal(sent.pending_requests.length,1);
+  f.finish('Current');await f.call('dsh_status',{agent_id:f.id});
+  assert.equal(f.manager.get(f.id).execution_id,old);
+  f.begin(f.calls.find(x=>x.method==='session/prompt').args.request);f.finish('Future');await f.manager.wait(f.id,2);
+  const done=f.manager.get(f.id);assert.notEqual(done.execution_id,old);assert.equal(done.web_turn,2);assert.deepEqual(done.pending_requests,[]);
+});
+
+test('steering is input correlation within the same host execution',async t=>{
+  const f=await setup(t,{running:true});await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  const old=f.manager.get(f.id).execution_id;
+  const sent=await f.manager.external.send(f.id,'Steer current','steer');
+  await f.manager.external.status(f.id);
+  const current=f.manager.get(f.id);assert.equal(current.execution_id,old);assert.equal(current.web_turn,1);assert.deepEqual(current.pending_requests,[]);
+  assert.notEqual(sent.delivery.request_id,current.execution_id);
+  f.finish('Steered result');await f.manager.wait(f.id,2);assert.equal(f.manager.get(f.id).execution_id,old);
+});
+
+test('legacy start seq and turnOutline are evidence, but an unanchored snapshot stays unknown',async t=>{
+  const f=await setup(t,{turnNumbers:false});await f.call('dsh_attach',{session_id:f.id,web_url:f.web_url});
+  assert.equal(f.manager.get(f.id).execution_identity_state,'unknown');assert.equal(f.manager.get(f.id).execution_id,undefined);
+  f.begin({requestId:'browser-legacy',content:[]});f.finish('Anchored');await f.manager.external.status(f.id);await f.manager.wait(f.id,2);
+  const a=f.manager.get(f.id);assert.equal(a.execution_identity_state,'confirmed');assert.match(a.execution_id,/:start:\d+$/);
+  const g=await setup(t,{turnNumbers:false,outline:true});await g.call('dsh_attach',{session_id:g.id,web_url:g.web_url});
+  const b=g.manager.get(g.id);assert.equal(b.execution_identity_state,'confirmed');assert.equal(b.web_turn,1);assert.equal(b.web_turn_start_seq,0);
 });

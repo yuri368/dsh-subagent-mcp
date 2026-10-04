@@ -41,10 +41,30 @@ test('service files quote user paths and run without elevated permissions', () =
   const plist = serviceDefinition({...record, backend: 'launchd'}).text;
   assert.match(plist, /名字 &amp; 50%/);
   assert.match(plist, /SuccessfulExit/);
-  const task = serviceDefinition({...record, backend: 'task-scheduler'}, {user: 'DOMAIN\\user & name'}).text;
+  const task = serviceDefinition({...record, backend: 'task-scheduler'}, {user: 'DOMAIN\\user & name',hiddenWindowsLauncher:true}).text;
   assert.match(task, /LeastPrivilege/);
   assert.match(task, /InteractiveToken/);
   assert.match(task, /user &amp; name/);
   assert.match(task, /PT0S/);
+  assert.match(task, /powershell\.exe<\/Command>/);
+  assert.match(task, /&quot;-WindowStyle&quot; &quot;Hidden&quot;/);
+  assert.match(task, /run-windows-service\.ps1/);
+  assert.match(task, /RestartOnFailure/);
+  // An upgrade must still recognize the direct-Node task it is replacing.
+  const legacy = '<Arguments>' + '"runner" "--config" "C:\\old &amp; 雪\\installation.json" "--daemon"' + '</Arguments>';
+  assert.equal(serviceBelongsTo(legacy, 'task-scheduler', 'C:\\old & 雪\\installation.json'), true);
   assert.equal(windowsQuote('C:\\path with spaces\\'), '"C:\\path with spaces\\\\"');
+});
+
+test('retained older Windows installation without the supervisor restores its own direct-Node task',()=>{
+  const root=mkdtempSync(join(temporaryDirectory(),'dsh-old-service-'));
+  try {
+    const config=join(root,'config/installation.json');
+    const record={backend:'task-scheduler',root,node:process.execPath};
+    const text=serviceDefinition(record,{config}).text;
+    assert.equal(text.includes('run-windows-service.ps1'),false);
+    assert.ok(text.includes('"--config"'.replaceAll('"','&quot;')));
+    assert.equal(serviceBelongsTo(text,'task-scheduler',config),true);
+    assert.equal(serviceBelongsTo(text,'task-scheduler',config+'.other'),false);
+  } finally {rmSync(root,{recursive:true,force:true});}
 });

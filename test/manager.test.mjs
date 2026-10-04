@@ -274,3 +274,12 @@ test('agents of one workspace share a virtual parent and never claim one another
  assert.equal(m.live.get(a.id).calls[0][1].resume,true);
  assert.equal((await m.release(a.id)).released,false);assert.equal(m.get(a.id).status,'running');
  });
+
+test('execution identity is persistent, stable on reads and busy rejection, and advances for accepted followup',async t=>{
+ const {m,dir,config}=setup(t);const a=await m.start({cwd:dir,task:'first'});await tick();
+ assert.ok(a.execution_id);assert.equal(m.get(a.id).execution_id,a.execution_id);
+ await assert.rejects(m.followup(a.id,'busy'),/busy/);assert.equal(m.get(a.id).execution_id,a.execution_id);
+ m.live.get(a.id).finish('done');await m.followup(a.id,'next');const next=m.get(a.id).execution_id;
+ assert.notEqual(next,a.execution_id);await m.shutdown();const recovered=new Manager(config,Fake);
+ try{assert.equal(recovered.get(a.id).execution_id,next);assert.equal(recovered.live.size,0);}finally{await recovered.shutdown();}
+});
