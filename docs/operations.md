@@ -94,6 +94,12 @@ Ask Codex to check the DSH task. Results and delivery receipts are saved under
 the answer. A receipt distinguishes `delivered`, `delivery_failed`, `cancelled`
 and `stopped`. The complete result is in the same callback directory.
 
+Completion defaults to `auto`: CLI selects native and Codex Desktop selects
+desktop-message. Both require a successful `dsh_watch` receipt (`watching`) to
+end the parent turn; otherwise retain the same task and use `dsh_wait` without
+`seconds`. The native CLI task and result callback must use the same Codex App
+Server. DSH Desktop.exe is not integrated by this Windows release candidate.
+
 The callback requires Codex's App Server to remain reachable. A failed
 acknowledgement may follow successful delivery; inspect the parent history before
 resending so the result is not delivered twice. No alternate delivery route is
@@ -115,9 +121,45 @@ Codex's review.
 
 For local development:
 
+On Windows RC8 and later, the login task uses a hidden Windows PowerShell
+supervisor. It starts the Node daemon with no console window, waits for its
+exit and returns the same exit code. This preserves Task Scheduler's login
+trigger, least-privilege user context, duplicate prevention and failure retries.
+Setting a task's `Hidden` checkbox alone does not hide a Node console.
+The daemon's normal log remains in the bridge state directory; supervisor
+startup failures are recorded as `service-launcher.log` beside installation.json.
+No machine/user execution policy is changed. An enforced policy can still
+reject the task script; setup then reports the failure and restores the prior
+installation. Retained versions without this supervisor restore their original
+direct-Node task during rollback, including the old window behavior.
+
 ```sh
 npm test
-DSH_RUNTIME_TEST=1 DSH_PACKAGE_TEST=1 npm test
+DSH_RUNTIME_TEST=1 DSH_PACKAGE_TEST=1 DSH_FRESH_INSTALL_TEST=1 npm test
+```
+
+The three switches enable both real DSH preset checks, the packed installation
+check, and the fresh installation check. Fresh installation uses private bridge,
+DSH and Codex homes, registers MCP with the actual Codex CLI, checks the callback
+schema, initializes both presets, and uninstalls its own service. It may reuse a
+compatible dependency available on `PATH`; testing dependency downloads also
+requires a private Node/npm installation and a `PATH` without DSH or Codex.
+
+On Windows, use a test scratch directory outside the system temporary directory
+when checking installation of Codex 0.158.0. Codex emits a helper-alias warning
+when `CODEX_HOME` is under that directory. The official installer's Windows
+PowerShell version check can treat this stderr warning as a failed version read.
+`TMPDIR` controls the fresh fixture location without changing the user's Codex
+home:
+
+```powershell
+$testScratch = Join-Path $PWD 'work\install-tests'
+New-Item -ItemType Directory -Force -Path $testScratch | Out-Null
+$env:TMPDIR = $testScratch
+$env:DSH_RUNTIME_TEST = '1'
+$env:DSH_PACKAGE_TEST = '1'
+$env:DSH_FRESH_INSTALL_TEST = '1'
+npm test
 ```
 
 The runtime checks exercise actual DSH initialization, presets, permissions and
