@@ -4,11 +4,12 @@ import {connectBridge} from './ipc.mjs';
 export async function bridgeClient(state) {
   const socket = await connectBridge(state);
   const pending = new Map();
-  let sequence = 0;
+  let sequence = 0, closed = false;
   const fail = error => {for (const item of pending.values()) item.reject(error); pending.clear();};
   socket.on('error', fail);
-  socket.on('close', () => fail(new Error('DSH connection closed before the result arrived')));
+  socket.on('close', () => {closed = true; fail(new Error('DSH connection closed before the result arrived'));});
   const lines = createInterface({input: socket});
+  lines.on('error', error => {fail(error); socket.destroy();});
   lines.on('line', line => {
     try {
       const message = JSON.parse(line), item = pending.get(message.id);
@@ -18,6 +19,7 @@ export async function bridgeClient(state) {
     } catch (error) {fail(error); socket.destroy();}
   });
   const request = (method, params) => new Promise((resolve, reject) => {
+    if (closed || socket.destroyed) {reject(new Error('DSH connection is closed')); return;}
     const id = ++sequence;
     pending.set(id, {resolve, reject});
     socket.write(JSON.stringify({jsonrpc: '2.0', id, method, params}) + '\n');

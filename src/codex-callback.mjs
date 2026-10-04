@@ -29,7 +29,7 @@ export async function codexCallback({threadId,output,endpoint,check=false},{time
   const socket=process.platform==='win32'&&!remote
     ? openNativeCodexSocket()
     : new WebSocket(callbackEndpoint(remote),token?{headers:{Authorization:'Bearer '+token}}:{});
-  let timer;
+  let timer, sending=false;
   try {
     return await new Promise((resolve,reject)=>{
       timer=setTimeout(()=>reject(new Error('Codex callback acknowledgement timed out; delivery may have occurred')),timeoutMs);
@@ -43,13 +43,13 @@ export async function codexCallback({threadId,output,endpoint,check=false},{time
         try {
           const message=JSON.parse(data.toString());
           if(message.id!==1&&message.id!==2)return;
-          if(message.error)throw new Error(JSON.stringify(message.error));
+          if(message.error)throw Object.assign(new Error(JSON.stringify(message.error)),{deliveryState:'not_sent'});
           if(message.id===1){
             send('initialized',{});
             if(check)send('thread/read',{threadId,includeTurns:false},2);
-            else send('turn/start',{threadId,input:[],toolOutput:{
+            else {sending=true; send('turn/start',{threadId,input:[],toolOutput:{
               name:'dsh_completion',namespace:null,output:JSON.stringify(output),
-            }},2);
+            }},2);}
           } else {
             if(check){
               if(message.result?.thread?.id!==threadId)throw new Error('Codex returned a different parent thread');
@@ -62,7 +62,7 @@ export async function codexCallback({threadId,output,endpoint,check=false},{time
         } catch(error){reject(error);}
       });
     });
-  } finally {
+  } catch(error) {error.deliveryState ||= sending ? 'unknown' : 'not_sent';throw error;} finally {
     clearTimeout(timer);
     socket.terminate();
   }

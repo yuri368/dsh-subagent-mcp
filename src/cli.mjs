@@ -14,7 +14,7 @@ try {
 
 Usage:
   dsh-subagent-mcp                          Install or update the integration, then return to your terminal
-  dsh-subagent-mcp setup [--capture-key] [--service auto|background]
+  dsh-subagent-mcp setup [--capture-key] [--service auto|background] [--completion-mode auto|wait|native|desktop-message]
   dsh-subagent-mcp doctor [--json]
   dsh-subagent-mcp login                    Sign in to Codex without starting a coding session
   dsh-subagent-mcp configure [--capture-key] Configure a DeepSeek API key
@@ -22,10 +22,12 @@ Usage:
   dsh-subagent-mcp start | stop [--force] | restart
   dsh-subagent-mcp logs
   dsh-subagent-mcp agents [COMMAND]         Manage subagents; use agents --help
-  dsh-subagent-mcp upgrade
+  dsh-subagent-mcp upgrade [--package PATH.tgz] [--replace-modified] [--yes] [--no-install-deps]
+  dsh-subagent-mcp rollback                 Restore the retained previous installation
   dsh-subagent-mcp uninstall [--purge]
   dsh-subagent-mcp codex [Codex arguments]  Explicitly open Codex using the installed integration
   dsh-subagent-mcp dsh [DSH arguments]
+  dsh-subagent-mcp web [--codex-workspace ABS] [DSH Web arguments]
   dsh-subagent-mcp notify --agent AGENT_ID
   dsh-subagent-mcp adopt
   dsh-subagent-mcp mcp                      MCP stdio transport
@@ -60,13 +62,14 @@ Upgrades and ordinary stops refuse to interrupt active tasks.`);
     const path = join(locations().state, 'daemon.log');
     console.log(existsSync(path) ? readFileSync(path, 'utf8').split('\n').slice(-100).join('\n') : 'No service log yet.');
   } else if (command === 'upgrade') {
+    await (await import('./local-upgrade.mjs')).upgrade(flags({package: {type: 'string'}, 'replace-modified': {type: 'boolean'}, 'no-skill': {type: 'boolean'}, yes: {type: 'boolean'}, 'no-install-deps': {type: 'boolean'}}));
+  } else if (command === 'rollback') {
     flags({});
-    const status = await (await import('./service.mjs')).statusService();
-    if (status.running && status.active.length) throw new Error('Finish or interrupt active DSH tasks before upgrading.');
-    (await import('./commands.mjs')).runCommand('npm', ['exec', '--yes', '--package=dsh-subagent-mcp@latest', '--', 'dsh-subagent-mcp', 'setup', ...(installation()?.skill === false ? ['--no-skill'] : [])]);
+    await (await import('./setup.mjs')).rollback();
   } else if (command === 'uninstall') await (await import('./setup.mjs')).uninstall(flags({purge: {type: 'boolean'}}));
   else if (command === 'notify') await (await import('./notify.mjs')).notify(args);
   else if (command === 'codex') await (await import('./codex-launch.mjs')).launchCodex(args);
+  else if (command === 'web') await (await import('./web-launch.mjs')).launchWeb(args);
   else if (command === 'dsh') {
     const env = {...process.env, ...installation()?.env, ...providerEnvironment()};
     (await import('./commands.mjs')).runCommand([process.execPath, resolveDshCli()], args, {env});

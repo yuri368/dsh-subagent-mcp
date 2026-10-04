@@ -218,7 +218,7 @@ export class Manager extends EventEmitter {
   }
   async start({task,cwd,name,model='deepseek-flash',provider='deepseek-official',effort='max',permission='workspace-write',preset='standard'}) {
     if(!isAbsolute(cwd)||!statSync(cwd).isDirectory())throw new Error('cwd must be an existing absolute directory');
-    const a={id:randomUUID(),name:name?.trim()||titleFromTask(task),cwd,model,provider,effort,permission,preset,status:'starting',created_at:new Date().toISOString(),answer:'',partial_text:'',persisted:false};
+    const a={id:randomUUID(),name:name?.trim()||titleFromTask(task),cwd,model,provider,effort,permission,preset,status:'starting',execution_id:randomUUID(),created_at:new Date().toISOString(),answer:'',partial_text:'',persisted:false};
     this.save(a);
     // Return the ID immediately. Boot and prompt errors remain observable by status.
     this.serial(a.id,()=>this.submit(a.id,task)).catch(e=>{const b=this.get(a.id);b.status='error';b.error=e.message;this.save(b);this.event(a.id,'error',{message:e.message});});
@@ -246,6 +246,7 @@ export class Manager extends EventEmitter {
     const limit=contextLimitTokens(a.provider);
     if(a.preset==='minimal'&&limit&&a.context_tokens>=limit*.75)
       throw new Error(`Agent context is ${a.context_tokens} of ${limit} tokens and the minimal preset does not compact; start a new agent for this task.`);
+    a.execution_id=randomUUID();this.save(a);
     return this.submit(id,task);
   });}
   rename(id,name) {return this.serial(id,async()=>{

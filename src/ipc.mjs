@@ -16,12 +16,12 @@ export async function connectBridge(state = locations().state) {
   return socket;
 }
 
-export async function control(action, {state = locations().state, ...params} = {}) {
+export async function control(action, {state = locations().state, timeoutMs = 30000, ...params} = {}) {
   const socket = await connectBridge(state);
   try {
     return await new Promise((resolve, reject) => {
       let buffer = '';
-      socket.setTimeout(30000, () => socket.destroy(new Error('DSH service did not answer ' + action)));
+      socket.setTimeout(timeoutMs, () => socket.destroy(new Error('DSH service did not answer ' + action)));
       socket.on('error', reject);
       socket.on('end', () => reject(new Error('DSH service closed before answering ' + action)));
       socket.on('data', chunk => {

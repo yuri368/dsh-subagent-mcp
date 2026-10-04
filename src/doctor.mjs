@@ -6,7 +6,9 @@ import {commandSpec, runCommand} from './commands.mjs';
 import {statusService} from './service.mjs';
 import {bridgeClient} from './bridge-client.mjs';
 import {codexCallback} from './codex-callback.mjs';
+import {desktopCallback} from './desktop-callback.mjs';
 import {accountStatus} from './accounts.mjs';
+import {completionPolicy, savedCompletionMode} from './completion-policy.mjs';
 
 export async function doctor({json = false, runtimeChecked = false, quiet = false} = {}) {
   const checks = [], record = installation();
@@ -33,11 +35,19 @@ export async function doctor({json = false, runtimeChecked = false, quiet = fals
   }
   const skill = join(locations().codex, 'skills/dsh-subagent/SKILL.md');
   add('Skill', existsSync(skill) ? 'ok' : 'warning', existsSync(skill) ? skill : 'Use setup to install the companion skill.');
-  if (process.env.CODEX_THREAD_ID) {
-    try {await codexCallback({threadId: process.env.CODEX_THREAD_ID, check: true}); add('Callback', 'ok', 'Parent thread is reachable');}
-    catch (error) {add('Callback', 'warning', error.message);}
+  const savedMode = process.env.DSH_COMPLETION_MODE ? undefined : savedCompletionMode(record?.env);
+  const completion = completionPolicy({}, process.env, savedMode);
+  if (completion.mode === 'wait') {
+    add('Completion', 'ok', 'MCP wait mode: results return through dsh_wait; automatic idle wakeup is unavailable.');
+  } else if (process.env.CODEX_THREAD_ID) {
+    try {
+      const adapter=completion.mode==='desktop-message'?desktopCallback:codexCallback;
+      await adapter({threadId: process.env.CODEX_THREAD_ID, check: true});
+      add('Callback', 'ok', completion.mode==='desktop-message'?'Parent Desktop thread is reachable through ordinary chat-message delivery':'Parent thread is reachable');
+    }
+    catch (error) {add('Callback', 'error', error.message + '; use DSH_COMPLETION_MODE=wait if this client has no native callback connection.');}
   } else add('Callback', 'warning', 'Run doctor inside Codex to check completion delivery to the current conversation.');
-  const report = {ok: !checks.some(check => check.status === 'error'), platform: process.platform, accounts, checks};
+  const report = {ok: !checks.some(check => check.status === 'error'), platform: process.platform, completion, accounts, checks};
   if (json) console.log(JSON.stringify(report, null, 2));
   else if (!quiet) for (const check of checks) console.log(`${check.status.toUpperCase().padEnd(7)} ${check.name}: ${check.detail}`);
   if (!report.ok) process.exitCode = 1;

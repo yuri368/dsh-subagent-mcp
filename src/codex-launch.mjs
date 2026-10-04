@@ -3,6 +3,15 @@ import {once} from 'node:events';
 import {commandSpec} from './commands.mjs';
 import {installation} from './platform.mjs';
 
+// A new CLI owns its own parent context. Desktop markers inherited when this
+// launcher is invoked from a Desktop terminal must not change CLI delivery.
+export function codexCliEnvironment(env = process.env) {
+  const cli = {...env};
+  for (const name of ['CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_APP_TOOLS_CALLER_HOST_ID', 'CODEX_THREAD_ID']) delete cli[name];
+  if (cli.CODEX_INTERNAL_ORIGINATOR_OVERRIDE === 'Codex Desktop') delete cli.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  return cli;
+}
+
 // An optional entrypoint for the privately installed CLI. Codex owns its
 // sessions, terminal and daemon, exactly as when launched from PATH.
 export async function launchCodex(args) {
@@ -21,7 +30,7 @@ export async function launchCodex(args) {
     if (!args.some(arg => arg === '--cd' || arg.startsWith('-C') || arg.startsWith('--cd='))) prefixArgs.push('--cd', process.cwd());
   }
   const [file, ...prefix] = spec;
-  const child = spawn(file, [...prefix, ...prefixArgs, ...args], {env: process.env, stdio: 'inherit'});
+  const child = spawn(file, [...prefix, ...prefixArgs, ...args], {env: codexCliEnvironment(), stdio: 'inherit'});
   const interrupt = () => child.kill('SIGINT');
   const terminate = () => child.kill('SIGTERM');
   process.once('SIGINT', interrupt); process.once('SIGTERM', terminate);

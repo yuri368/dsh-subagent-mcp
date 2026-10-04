@@ -9,9 +9,11 @@ import {projectRoot, resolveDshCli} from './config.mjs';
 import {locations, installation, installationFile, privateDirectory, readableProgramDirectory, writeJson} from './platform.mjs';
 import {commandSpec, packageEntry, runCommand} from './commands.mjs';
 import {installPackage} from './install-package.mjs';
+import {assertUnmodified, assertUpgrade, contentManifest, snapshotFile, updateCodexToml} from './release-safety.mjs';
 import {backendDefault, installService, startService, stopService, statusService, removeService, systemdQuote, nativeServiceConflict} from './service.mjs';
 import {bridgeClient} from './bridge-client.mjs';
 import {accountStatus, printAccounts, captureProvider, guideDeepseek, installCommand} from './accounts.mjs';
+import {savedCompletionMode} from './completion-policy.mjs';
 
 export const TESTED_DSH = '0.1.5-rc.1';
 export const TESTED_CODEX = '0.158.0';
@@ -78,9 +80,10 @@ function ensureDependencies(installMissing) {
   return {dsh, codex};
 }
 
-export function registerCodex(record) {
-  const env = ['DSH_SUBAGENT_STATE=' + record.state, 'DSH_SUBAGENT_CONFIG=' + locations().config];
-  runCommand(record.codex, ['mcp', 'add', 'dsh_subagent', ...env.flatMap(value => ['--env', value]), '--', record.node, join(record.root, 'src/cli.mjs'), 'mcp']);
+export function registerCodex(record, {completionMode} = {}) {
+  const path = join(locations().codex, 'config.toml');
+  const text = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  writeFileSync(path, updateCodexToml(text, record, locations().config, {completionMode}), {mode: 0o600});
 }
 
 function codexRegistration(codex) {
@@ -109,6 +112,7 @@ function nextSteps() {
 export async function onboard() {
   const record = installation();
   if (!record) return setup([]);
+  assertUpgrade(record, version());
   const status = await statusService();
   const workInProgress = status.running && status.active?.length;
   if (record.version !== version() && !workInProgress)
@@ -126,11 +130,17 @@ export async function setup(argv, {source = false, launching = false} = {}) {
   const {values: args} = parseArgs({args: argv, options: {
     skill: {type: 'boolean'}, 'no-skill': {type: 'boolean'}, 'capture-key': {type: 'boolean'},
     'no-install-deps': {type: 'boolean'}, service: {type: 'string'}, yes: {type: 'boolean'},
+    'replace-modified': {type: 'boolean'},
+    'completion-mode': {type: 'string'},
   }});
+  const completionMode = args['completion-mode'] === undefined ? undefined : savedCompletionMode({DSH_COMPLETION_MODE: args['completion-mode']});
+  if (args['completion-mode'] !== undefined && !completionMode) throw new Error('--completion-mode requires auto, wait, native or desktop-message.');
   if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('Supported systems: Windows, Linux and macOS.');
   if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node.js 24 or newer is required. Install it from https://nodejs.org/ and rerun setup.');
   const allowed = {linux: ['systemd', 'background'], darwin: ['launchd', 'background'], win32: ['task-scheduler', 'background']}[process.platform];
   const previous = installation();
+  assertUpgrade(previous, version());
+  assertUnmodified(previous, args['replace-modified']);
   let backend = args.service === 'auto' ? backendDefault() : args.service || previous?.backend || backendDefault();
   if (!allowed.includes(backend)) throw new Error('Supported service choices on this system: ' + allowed.join(', '));
   if (!args['no-skill'] && existingSkill() && !ownsSkill()) throw new Error('A custom skill exists at ' + skillTarget() + '. It was preserved. Use --no-skill to keep managing it yourself.');
@@ -189,12 +199,17 @@ export async function setup(argv, {source = false, launching = false} = {}) {
   await (await import('./probe-runtime.mjs')).probeRuntime(dependencies.dsh);
   const root = source ? projectRoot : installPackage(projectRoot, join(paths.data, 'versions', version() + '-' + randomUUID().slice(0, 8)));
   if (!source) readableProgramDirectory(root);
-  const env = Object.fromEntries(['PATH', 'DSH_HOME', 'TMPDIR', 'CODEX_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'DSH_SUBAGENT_CONFIG', 'DSH_SUBAGENT_DATA'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  const record = {version: version(), root, node: process.execPath, ...dependencies, backend, state: paths.state, env, skill: !args['no-skill']};
+  const env = {...previous?.env, ...Object.fromEntries(['PATH', 'DSH_HOME', 'TMPDIR', 'CODEX_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'DSH_SUBAGENT_CONFIG', 'DSH_SUBAGENT_DATA'].filter(key => process.env[key]).map(key => [key, process.env[key]]))};
+  env.DSH_COMPLETION_MODE = completionMode ?? env.DSH_COMPLETION_MODE ?? 'auto';
+  const record = {version: version(), root, node: process.execPath, ...dependencies, backend, state: paths.state, env, skill: !args['no-skill'], integrity: contentManifest(root)};
+  // Retain the complete prior program directory, including explicitly accepted
+  // local patches; never reinstall it from npm during rollback.
+  if (previous) record.previousInstallation = {...previous, integrity: contentManifest(previous.root)};
+  const restoreCodex = snapshotFile(join(paths.codex, 'config.toml'));
   console.log('Connecting the background service and Codex…');
   if (legacyRunning) runCommand(['systemctl'], ['--user', 'stop', 'dsh-subagent-mcp.service']);
   await stopService();
-  let registered = false, skillChanged = false;
+  let registered = false, skillChanged = false, report;
   try {
     if (previous && previous.backend !== backend) await removeService(previous);
     writeJson(installationFile(), record);
@@ -206,8 +221,8 @@ export async function setup(argv, {source = false, launching = false} = {}) {
       record.backend = 'background'; writeJson(installationFile(), record);
     }
     await startService(record);
-    registerCodex(record);
     registered = true;
+    registerCodex(record, {completionMode});
     if (record.skill) {
       mkdirSync(join(paths.codex, 'skills'), {recursive: true});
       if (existingSkill()) unlinkSync(skillTarget());
@@ -215,7 +230,16 @@ export async function setup(argv, {source = false, launching = false} = {}) {
       symlinkSync(join(root, 'skills/dsh-subagent'), skillTarget(), process.platform === 'win32' ? 'junction' : 'dir');
     }
     runCommand([process.execPath, join(root, 'scripts/uninstall-web.mjs')]);
+    const {doctor} = await import('./doctor.mjs');
+    report = await doctor({quiet: true, runtimeChecked: true});
+    if (!report.ok) throw new Error('Installation health check failed: ' + report.checks.filter(check => check.status === 'error').map(check => check.name + ': ' + check.detail).join('; '));
   } catch (error) {
+    // Restore user-facing state before service recovery, which can itself fail.
+    if (registered) restoreCodex();
+    if (skillChanged) {
+      if (existingSkill()) unlinkSync(skillTarget());
+      if (oldSkill) symlinkSync(oldSkill, skillTarget(), process.platform === 'win32' ? 'junction' : 'dir');
+    }
     await removeService(record).catch(cleanup => console.error('Service cleanup: ' + cleanup.message));
     if (previous) {
       writeJson(installationFile(), previous);
@@ -230,21 +254,9 @@ export async function setup(argv, {source = false, launching = false} = {}) {
         if (legacyRunning) runCommand(['systemctl'], ['--user', 'start', 'dsh-subagent-mcp.service']);
       }
     }
-    if (registered) {
-      if (oldRegistration) {
-        const {command, args = [], env = {}} = oldRegistration.transport;
-        runCommand(dependencies.codex, ['mcp', 'add', 'dsh_subagent', ...Object.entries(env).flatMap(([key, value]) => ['--env', key + '=' + value]), '--', command, ...args]);
-      } else runCommand(dependencies.codex, ['mcp', 'remove', 'dsh_subagent']);
-    }
-    if (skillChanged) {
-      if (existingSkill()) unlinkSync(skillTarget());
-      if (oldSkill) symlinkSync(oldSkill, skillTarget(), process.platform === 'win32' ? 'junction' : 'dir');
-    }
     throw error;
   }
   console.log('\nInstallation complete.');
-  const {doctor} = await import('./doctor.mjs');
-  const report = await doctor({quiet: true, runtimeChecked: true});
   if (report.ok) console.log('Codex integration and the DSH background service are ready.');
   else for (const check of report.checks.filter(check => check.status === 'error')) console.error(`${check.name}: ${check.detail}`);
   printAccounts(report.accounts);
@@ -267,4 +279,44 @@ export async function uninstall({purge = false} = {}) {
     for (const name of ['provider.json', 'environment']) rmSync(join(locations().config, name), {force: true});
   }
   console.log(purge ? 'Uninstalled and removed bridge history and captured provider settings. DSH sessions are retained.' : 'Uninstalled. Bridge history, provider settings and DSH sessions were retained.');
+}
+
+export async function rollback() {
+  const current = installation(), previous = current?.previousInstallation;
+  if (!previous) throw new Error('No retained installation is available for rollback.');
+  const status = await statusService();
+  if (status.running && status.active?.length) throw new Error('Finish or interrupt active DSH tasks before rollback.');
+  assertUnmodified(current);
+  assertUnmodified(previous);
+  if (current.skill && existingSkill() && !ownsSkill()) throw new Error('A custom skill exists; rollback preserved it and refused to replace it.');
+  const restoreCodex = snapshotFile(join(locations().codex, 'config.toml'));
+  const oldSkill = ownsSkill() ? realpathSync(skillTarget()) : null;
+  const record = {...previous, previousInstallation: current};
+  // Restore the retained version's policy too. Leaving auto in the current
+  // MCP registration breaks older frontends which do not understand it.
+  const completionMode = savedCompletionMode(record.env) ?? 'native';
+  let skillChanged = false;
+  await stopService();
+  try {
+    await removeService(current);
+    writeJson(installationFile(), record);
+    installService(record); await startService(record);
+    registerCodex(record, {completionMode});
+    if (record.skill) {
+      if (existingSkill()) unlinkSync(skillTarget());
+      skillChanged = true;
+      symlinkSync(join(record.root, 'skills/dsh-subagent'), skillTarget(), process.platform === 'win32' ? 'junction' : 'dir');
+    } else if (ownsSkill()) {unlinkSync(skillTarget()); skillChanged = true;}
+  } catch (error) {
+    restoreCodex();
+    if (skillChanged) {
+      if (existingSkill()) unlinkSync(skillTarget());
+      if (oldSkill) symlinkSync(oldSkill, skillTarget(), process.platform === 'win32' ? 'junction' : 'dir');
+    }
+    await removeService(record).catch(() => {});
+    writeJson(installationFile(), current);
+    installService(current); await startService(current);
+    throw error;
+  }
+  console.log(`Restored retained installation ${record.version}; history and user configuration were preserved.`);
 }

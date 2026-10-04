@@ -1,15 +1,36 @@
 import {mkdirSync,readFileSync,writeFileSync,unlinkSync} from 'node:fs';
 import {dirname,join} from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {authenticateWeb,WebClient} from './web-client.mjs';
 import {settledStatus} from './manager.mjs';
 import {privateDirectory} from './platform.mjs';
 
 const active=a=>['starting','running','interrupting'].includes(a.status);
 const textOf=message=>(message?.content??[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+const turnNumber=value=>Number.isSafeInteger(value)&&value>0;
+const eventSeq=value=>Number.isSafeInteger(value)&&value>=0;
 
 export class ExternalSessions {
   constructor(manager) {this.manager=manager;this.live=new Map();this.opening=new Map();}
+  unknownExecution(a) {
+    delete a.execution_id;delete a.web_turn;delete a.web_turn_start_seq;
+    a.execution_identity_state='unknown';
+  }
+  execution(a,event) {
+    // Host turn numbers survive paging, reconnects and prompts submitted in
+    // the browser. A user-rpc request ID identifies an input, not a turn.
+    const turn=event.data?.turn;
+    if(event.type==='turn/start')this.unknownExecution(a);
+    if(turnNumber(turn)) {
+      if(a.web_turn!==turn){delete a.web_turn_start_seq;}
+      a.web_turn=turn;
+    } else if(event.type!=='turn/start')return;
+    if(event.type==='turn/start'&&eventSeq(event.seq))a.web_turn_start_seq=event.seq;
+    const anchor=turnNumber(a.web_turn)?`turn:${a.web_turn}`:eventSeq(a.web_turn_start_seq)?`start:${a.web_turn_start_seq}`:null;
+    if(!anchor)return;
+    const scope=createHash('sha256').update(JSON.stringify([a.web_origin,a.session_id])).digest('hex');
+    a.execution_id=`web:${scope}:${anchor}`;a.execution_identity_state='confirmed';
+  }
   credentialPath(id) {return join(dirname(this.manager.config.database),'web-auth',id+'.json');}
   async attach({session_id,web_url}) {
     const credentials=await authenticateWeb(web_url);
@@ -58,7 +79,10 @@ export class ExternalSessions {
           client.rpc('$events/result',{clientId:runtime.clientId,eventId:frame.eventId,outcome:{kind:'next'}}).catch(fail);
         } else if(frame.type==='ready')runtime.clientId=frame.clientId;
         else if(frame.type==='emit'&&frame.args[0]===id) {
-          if(frame.event==='api-session/status') {runtime.running=frame.args[1];this.settle(id,runtime);}
+          if(frame.event==='api-session/status') {
+            if(frame.args[1]&&!runtime.running){const current=this.manager.get(id);this.unknownExecution(current);this.manager.save(current);}
+            runtime.running=frame.args[1];this.settle(id,runtime);
+          }
           // A session error ends the current turn inside DSH Web; the Web
           // connection and session remain usable, so keep observing.
           else if(frame.event==='api-session/error')this.sessionError(id,runtime,String(frame.args[1]));
@@ -81,6 +105,7 @@ export class ExternalSessions {
       if(this.live.get(id)!==runtime)throw new Error('DSH Web observer detached');
       if(!row)throw new Error('External session no longer exists');
       runtime.running=row.running;
+      if(row.running&&this.manager.get(id).finish_reason){const current=this.manager.get(id);this.unknownExecution(current);this.manager.save(current);}
       if(!row.running&&!this.manager.get(id).finish_reason){const current=this.manager.get(id);current.status='idle';this.manager.save(current);}
       runtime.ready=true;
       for(const pending of runtime.pending)pending();runtime.pending=[];
@@ -95,12 +120,18 @@ export class ExternalSessions {
     a.permission=values.permissions?.currentValue??null;
     a.model=selection?.model;a.provider=selection?.provider;a.effort=selection?.reasoningEffort;
     a.name=values.title??a.name;a.error=null;a.finish_reason=null;a.answer='';
+    this.unknownExecution(a);
     a.pending_requests=[...runtime.requests];
     for(const {event} of frame.records) {
+      if(/^(turn\/|step\/|assistant\/|tool\/)/.test(event.type))this.execution(a,event);
       if(event.type==='turn/start') {a.finish_reason=null;a.answer='';}
       if(event.type==='assistant/message')a.answer=textOf(event.data.message);
       if(event.type==='turn/end')a.finish_reason=event.data.reason;
     }
+    // This whole-log wire projection is available even when the two-message
+    // follow snapshot omits the latest turn/start boundary.
+    const latest=Array.isArray(values.turnOutline)?values.turnOutline.at(-1):null;
+    if(latest&&turnNumber(latest.turn)&&eventSeq(latest.seq)&&(!turnNumber(a.web_turn)||latest.turn>=a.web_turn))this.execution(a,{type:'turn/start',seq:latest.seq,data:{turn:latest.turn}});
     this.manager.save(a);
     for(const {event} of frame.records)this.record(id,event);
   }
@@ -122,6 +153,9 @@ export class ExternalSessions {
       return;
     }
     const e=frame.event;
+    // Replayed history must not rewind the current execution or clear its answer.
+    if(!eventSeq(e?.seq)||e.seq<=(a.web_cursor??-1))return;
+    if(/^(turn\/|step\/|assistant\/|tool\/)/.test(e.type))this.execution(a,e);
     if(e.type==='user/message') {
       runtime.requests.delete(e.data.source?.rpcId);
       a.pending_requests=[...runtime.requests];
@@ -174,13 +208,13 @@ export class ExternalSessions {
     const runtime=await this.ensure(id),requestId=randomUUID();
     runtime.requests.add(requestId);
     const submitted=this.manager.get(id);submitted.pending_requests=[...runtime.requests];
-    if(!active(a)){submitted.status='starting';submitted.finish_reason=null;submitted.answer='';submitted.partial_text='';}
+    if(!active(a)){submitted.status='starting';submitted.finish_reason=null;submitted.answer='';submitted.partial_text='';this.unknownExecution(submitted);}
     this.manager.save(submitted);
     try {await runtime.client.rpc('session/prompt',{request:{sessionId:id,requestId,mode,content:[{type:'text',text:task}]}});}
     catch(error) {
       // A lost HTTP receipt may still have admitted the request. Keep its identity observable.
       const current=this.manager.get(id);
-      if(error.remoteRejected){runtime.requests.delete(requestId);current.pending_requests=[...runtime.requests];current.status=a.status;current.finish_reason=a.finish_reason;current.answer=a.answer;}
+      if(error.remoteRejected){runtime.requests.delete(requestId);current.pending_requests=[...runtime.requests];current.status=a.status;current.finish_reason=a.finish_reason;current.answer=a.answer;current.execution_id=a.execution_id;current.execution_identity_state=a.execution_identity_state;current.web_turn=a.web_turn;current.web_turn_start_seq=a.web_turn_start_seq;}
       else current.status='error';
       current.error=error.message;this.manager.save(current);throw error;
     }

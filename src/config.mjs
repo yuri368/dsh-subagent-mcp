@@ -38,6 +38,8 @@ export function runtimeConfig(state=stateDirectory(),cli=resolveDshCli()) {
       name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
     - id: codex-subagent-rpc
       name: ${JSON.stringify(join(projectRoot,'src/dsh-plugin.mjs'))}
+    - id: dsh-codex-tool
+      name: ${JSON.stringify(join(projectRoot,'src/dsh-codex-tool.mjs'))}
 `;
   // As in DSH's Web composition, presets own the agent tools and prompt
   // contributions. Keeping the base tools would make minimal non-minimal.

@@ -20,7 +20,7 @@ export function backendDefault() {
   return spawnSync('systemctl', ['--user', 'show-environment'], {stdio: 'ignore'}).status === 0 ? 'systemd' : 'background';
 }
 
-export function serviceDefinition(record, {home = homedir(), user = '', config = installationFile()} = {}) {
+export function serviceDefinition(record, {home = homedir(), user = '', config = installationFile(), systemRoot = process.env.SystemRoot || 'C:\\Windows', hiddenWindowsLauncher = existsSync(join(record.root, 'scripts/run-windows-service.ps1'))} = {}) {
   const runner = join(record.root, 'src/service-runner.mjs');
   const args = [runner, '--config', config, '--daemon'];
   if (record.backend === 'systemd') return {
@@ -31,10 +31,19 @@ export function serviceDefinition(record, {home = homedir(), user = '', config =
     path: join(home, 'Library/LaunchAgents', label + '.plist'),
     text: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${[record.node, ...args].map(a => '<string>' + xml(a) + '</string>').join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>3</integer><key>Umask</key><integer>63</integer></dict></plist>\n`,
   };
-  if (record.backend === 'task-scheduler') return {
+  if (record.backend === 'task-scheduler') {
+    const launcher = join(record.root, 'scripts/run-windows-service.ps1');
+    // Retained versions predating this helper must still be startable after
+    // rollback or failed-upgrade recovery. Restore their original task action.
+    const host = hiddenWindowsLauncher ? join(systemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe') : record.node;
+    const launchArgs = hiddenWindowsLauncher ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-ExecutionPolicy', 'Bypass', '-File', launcher, '-NodePath', record.node,
+      '-Runner', runner, '-Config', config, '-WorkingDirectory', record.root] : args;
+    return {
     path: join(locations().config, 'service.xml'),
-    text: `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>DeepSeek subagents for Codex</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(user)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>${xml(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(record.node)}</Command><Arguments>${xml(args.map(windowsQuote).join(' '))}</Arguments><WorkingDirectory>${xml(record.root)}</WorkingDirectory></Exec></Actions></Task>\n`,
+    text: `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>DeepSeek subagents for Codex</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(user)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>${xml(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(host)}</Command><Arguments>${xml(launchArgs.map(windowsQuote).join(' '))}</Arguments><WorkingDirectory>${xml(record.root)}</WorkingDirectory></Exec></Actions></Task>\n`,
   };
+  }
   return null;
 }
 
@@ -42,7 +51,7 @@ export function serviceBelongsTo(text, backend, config = installationFile()) {
   if (backend === 'systemd') return text.includes('"--config" ' + systemdQuote(config));
   if (backend === 'launchd') return text.includes('<string>--config</string><string>' + xml(config) + '</string>');
   const decoded = text.replaceAll('&quot;', '"').replaceAll('&apos;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
-  return decoded.includes('"--config" ' + windowsQuote(config));
+  return decoded.includes('"--config" ' + windowsQuote(config)) || decoded.includes('"-Config" ' + windowsQuote(config));
 }
 
 // Login services have one name per OS user. An isolated configuration must not
