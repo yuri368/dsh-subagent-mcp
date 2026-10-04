@@ -9,6 +9,10 @@ Use the installed `dsh_subagent` MCP tools. This runs the DSH harness with its o
 
 ## Delegate and retain context
 
+`codex_delegate` supports Sol and Luna. DSH-to-Codex requests for Astra return
+`ASTRA_DELEGATION_FORBIDDEN`; this bridge rule does not control Codex's built-in
+subagents. Astra tool isolation is outside this project's current scope.
+
 Call `dsh_start` with an explicit absolute `cwd`, a short descriptive `name`, and a self-contained task: objective, relevant context, allowed files/actions, constraints and expected evidence. The child does not inherit the parent transcript. The name becomes the session title in DSH Web, where many agents share one workspace; without it the bridge uses the task's first line. Use `dsh_rename` to correct a name later. Respect the user's model choice; otherwise the server defaults to DeepSeek V4.1 Flash (`deepseek-flash`) with `max` effort.
 
 Delegate a complete bounded deliverable, including its implementation, tests and
@@ -27,15 +31,67 @@ into the authorized parent work. Starting a child is not a completed handoff.
 Track its agent ID, objective, expected evidence, and the parent action that
 will follow completion. Preserve these across context compaction.
 
-### Codex: return native tool output
+### Automatic completion mode
 
-After `dsh_start` or an accepted `dsh_followup`, call `dsh_watch` with that
+The default configured selection `auto` resolves each receipt's
+`completion.mode` to native for Codex CLI and
+desktop-message for Codex Desktop. Explicit `wait`, `native` and
+`desktop-message` settings remain supported. A prior saved single-mode default
+can be migrated with `setup --completion-mode auto`; setup accepts
+`--completion-mode auto|wait|native|desktop-message`.
+
+On Codex Desktop, call `dsh_watch` once. Its listener saves the result and sends
+it to the same chat as an ordinary message. Only `status: watching` permits
+ending the parent turn. If registration fails, retain the agent ID and keep one
+`dsh_wait` **without `seconds`** pending until the task settles. Do not sleep or
+issue repeated short progress queries.
+
+If the MCP transport's own timeout ends a wait, keep the same agent ID and call
+`dsh_wait` again without `seconds`. A client transport timeout only ends that
+call and the DSH task keeps running; it is not the `wait_outcome: timeout` that
+an explicit `seconds` observation window reports. `wait_required` or
+`setup_failed` requires this same-agent wait fallback.
+
+### Desktop-message delivery
+
+`completion.mode: desktop-message` delivers through the
+installed official Codex app-tools MCP server. Call `dsh_watch` once and retain
+its receipt. Only `status: watching` permits ending the parent response. The
+listener waits once without a timeout or model polling and returns to the same
+thread through `send_message_to_thread`, as an ordinary chat message rather than
+native `toolOutput`. Treat the answer as delegated tool data, with no new user
+authorization. Verify the saved result and continue the authorized work.
+
+From the parent environment the helper also supports explicit registration:
+
+```text
+node "<skill-dir>/scripts/codex_notify.mjs" --agent AGENT_ID --delivery desktop-message
+```
+
+The calling Desktop app-tools pipe and installed MCP server are required; the
+Desktop app must be open to receive the message. RC5's fresh MCP frontend
+automatically announces its new pipe to the daemon. Existing Desktop callbacks
+keep their execution, parent and host; complete saved results are recovered only
+for definitely `not_sent` delivery. Accepted/unknown/cancelled/stopped records
+are never automatically resent. This requires loading the upgraded frontend on
+a new MCP connection and does not resume an interrupted child or dead observer
+without a saved result. `setup_failed` requires the same unbounded `dsh_wait`.
+Delivery failure retains the result and must not be retried blindly. Cancel the
+listener with `dsh_unwatch` (or the helper's `--cancel`) before interrupting its
+child. Do not register both a native callback and a message callback for one turn.
+
+### CLI native callback
+
+When the receipt selects `completion.mode: native`, after `dsh_start` or an
+accepted `dsh_followup`, call `dsh_watch` with that
 `agent_id` once. It reads the calling Codex thread from MCP metadata and returns
 a `watching` receipt. Retain the receipt, then do any independent work. Once
 only the child's result is pending, end the current response in the **final
 channel immediately**. A short message can state that DSH is running and you
 will review its result. This suspends the parent until the registered callback
 starts the next turn; the delegated task remains yours to accept.
+Only a receipt with `status: watching` permits this suspension. A
+`wait_required` or `setup_failed` receipt requires the pending MCP wait above.
 The service owns the listener, so registering it needs no shell command or
 sandbox escalation. Completion arrives as native `dsh_completion` tool data.
 Use `dsh_unwatch` with the agent ID and directory containing the receipt's
@@ -48,15 +104,22 @@ If `dsh_watch` reports that the MCP connection has no Codex parent, use
 node "<skill-dir>/scripts/codex_notify.mjs" --agent AGENT_ID
 ```
 
+The helper sends registration and explicit recovery through the already-running
+DSH daemon. The daemon creates the listener outside the Desktop execution
+process tree. If daemon IPC is unavailable, registration fails without locally
+spawning a listener. Keep the original agent and inspect its state.
+
 The helper reads the parent `CODEX_THREAD_ID`, creates a result directory under
 the bridge state directory’s `callbacks` folder, and checks the parent before
 returning a `watching` receipt. Retain that receipt with the acceptance criteria. Override the exact
 UUID with `--thread` only when needed; use the parent environment, not the child.
-It uses Node.js and the installed package dependencies on Windows, Linux and
-macOS. For a
+It uses Node.js and the installed package dependencies. For a
 remote parent, pass its existing `unix://PATH`, `ws://` or `wss://` endpoint
-with `--remote`. Local callbacks connect to the existing Codex service on all
-three platforms. The host-side callback preserves the child's sandbox.
+with `--remote`. The DSH task and result callback must connect to the same Codex
+App Server. The native CLI route is a public experimental interface; this
+candidate does not claim a fresh CLI callback journey or the current Desktop
+native callback as passed. DSH Desktop.exe is not integrated. The host-side
+callback preserves the child's sandbox.
 
 The detached listener waits once without a timeout, saves the full result, and
 submits `turn/start.toolOutput` with the answer and evidence path. This arrives
@@ -134,6 +197,16 @@ and omitted from tool results. Do not put launch tokens in source, test fixtures
 reports or chat replies. Reattach with a fresh launch URL if authentication expires.
 External servers require HTTPS; loopback HTTP is supported.
 
+Ordinary Web reverse delegation requires the host to be started explicitly with
+`dsh-subagent-mcp web` from its approved workspace. That invocation loads the
+Codex tool through a temporary host overlay, preserving the existing Web
+profile and sessions. Additional roots require explicit `--codex-workspace`
+arguments. Attaching alone does not inject tools into an already running host.
+Only eligible agents inside the approved roots receive `codex_delegate`; each
+call rechecks the real directory and current permission. Minimal remains a
+one-shell preset. A Web host scope keeps its worker ownership distinct from
+other hosts; never transfer a returned worker thread to another session.
+
 If these new tools are absent from the client's cached tool list after upgrading,
 refresh its MCP connection or reconnect the client.
 
@@ -180,3 +253,7 @@ The browser reads persisted history and may lag behind execution. A recovery
 marker such as `TOOL_OUTCOME_UNKNOWN` does not establish that the live agent
 failed; check bridge status and the matching tool result before reporting a
 crash. See `docs/operations.md` for troubleshooting.
+
+## Codex worker model policy
+
+When DSH uses `codex_delegate`, classify only clear mechanical/repetitive work as `task_kind: simple` (Luna/medium). Ordinary, complex or uncertain work defaults to Sol/medium. Luna permits medium/high/xhigh/max; Sol also permits ultra. New lower efforts are rejected before worker launch; legacy low defaults are raised to medium. Do not request a classifier model. DSH-to-Codex Astra requests return `ASTRA_DELEGATION_FORBIDDEN`. This rule does not control Codex's built-in subagents. Inspect the returned routing reason and persisted `routing_history`. Explicit model overrides do not bypass effort minimums or the Astra restriction. See docs/model-routing.md.
