@@ -1,14 +1,31 @@
 # Release acceptance follows the user journey
 
+This document describes the optional hosted public-release gate, including
+autonomous CLI dispatch. It is not a passed hosted acceptance report for RC8.
+The local Windows delivery selects Desktop messages and CLI native through auto.
+The configured real DSH-to-CLI callback chain passed using an external installed
+MCP dispatch driver; autonomous model dispatch and zero-configuration startup
+remain separate cases. See [current scope](current-delivery.md). Desktop message
+delivery and saved-result restart recovery have historical RC5 evidence.
+
 The release workflow tests installation and a real delegated task from the
 public entry points. A successful model request alone does not satisfy the gate.
 The candidate is packed once. Every installation job, the real model jobs and the
-publication step use that same artifact. Publication depends on all three
-platform installation jobs and both real Windows journeys passing.
+publication step use that same artifact. The current delivery scope is Windows.
+The workflow defaults to Windows installation acceptance and both real Windows
+journeys; optional `test_posix: true` also requires Linux/macOS installation jobs.
+No Linux/macOS acceptance is claimed for the local Windows delivery.
+
+The candidate is built through `scripts/pack-local-release.mjs`, including its
+checksum and manifest sidecars. Each job and publication runs
+`scripts/verify-local-release.mjs` on the downloaded artifact. Prereleases publish
+under `next`; stable versions use `latest`. A local Windows test run is separate
+evidence and never substitutes for the configured hosted installation and real
+account gates. Delivering a local project ZIP does not publish an npm package.
 
 ## What the gate requires
 
-On fresh Windows, Linux and macOS CI machines, the packed npm command runs with
+On the fresh Windows CI machine (and Linux/macOS when explicitly enabled), the packed npm command runs with
 isolated settings and no Codex or DeepSeek credentials. It must install, explain
 account readiness and the next step, then return to the shell. It must not open a
 Codex task. On Linux and macOS the first installation runs in a real terminal:

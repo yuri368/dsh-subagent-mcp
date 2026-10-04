@@ -1,5 +1,13 @@
 # Validation
 
+This document records historical validation for earlier versions and dates.
+Its cross-platform results do not establish acceptance for the Windows RC8
+candidate. Current RC8 evidence is in the delivery's evidence directory: the
+configured real DSH-to-CLI callback chain passed with an external installed MCP
+dispatch driver, not autonomous natural-language model dispatch or zero-configuration
+startup. The old RC7 account bootstrap timeout no longer reproduces; its precise
+cause is unconfirmed. Earlier evidence below remains unchanged.
+
 ## 0.6.0 cross-platform installation — 2026-09-28
 
 The [native CI matrix](https://github.com/dqtz5vpvj9-create/dsh-subagent-mcp/actions/runs/36398283382)

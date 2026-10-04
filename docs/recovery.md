@@ -1,0 +1,84 @@
+# Callback recovery
+
+Callback observation and task execution are separate. Restoring observation issues one `dsh_wait` for the same agent. Saved-result recovery reads the original result without replaying observation or task execution. It never creates a new agent, calls `dsh_followup`, replays a prompt, or resends an accepted or uncertain delivery. RC5 can automatically recover a definitely unsent Desktop message after a fresh authenticated Desktop transport connects.
+
+Each managed execution has a persistent `execution_id`, created before the initial start receipt and changed only when a follow-up is accepted. `dsh_watch` uses `(agent, parent thread, execution_id)` as its durable registration key. Parent turn changes, delivery transport changes, and alternate `--output-dir` values cannot create a second callback for that execution. A callback index preserves the original output directory. Legacy records without an execution ID use their saved message ID or creation time. Direct skill/CLI helpers without `--turn` read that same execution identity from the local persistent agent database; they do not generate a random key or replay a task.
+
+## Observer ownership
+
+The production MCP frontend forwards `dsh_watch` to the existing DSH daemon. Its `makeServer` handler calls `watchFromMcp`, which registers the observer inside that daemon. The short-lived MCP frontend does not own the observer.
+
+The companion CLI and exported `registerCallback` helper also send an authenticated `callback-register` control request to the existing daemon. Both initial registration and explicit unsent-result recovery are spawned by the daemon. `registrar_pid` records that spawning process in the persistent receipt. An unavailable daemon is an error; the helper never falls back to a local fork. A helper talking to an older daemon without this control action must be upgraded with the daemon before this ownership guarantee applies.
+
+This distinction matters on Windows: `fork({detached:true})` alone does not prove escape from the caller's kill-on-close Job. The earlier direct-helper path spawned inside Desktop exec's process tree; a real Desktop exit left its receipt at `watching` after its observer died. That failure did not establish that production `dsh_watch`, already hosted in the task-scheduler daemon, had the same ownership defect. The helper now uses that existing daemon too. Calling the internal foreground observer directly still binds it to the process tree that launches it.
+
+Only caller transport context is forwarded: the Desktop pipe and optional caller host ID, or native connection/endpoint/token. Caller context cannot choose the daemon's Node executable, Desktop MCP server code, general environment, state directory, or alternate deduplication registry. Observer restoration keeps the original transport as well as agent, parent and execution. A live or final callback retains its existing record; moving registration to the daemon does not resend accepted or uncertain delivery.
+
+## Persistent states
+
+| Receipt status | Meaning | Safe recovery |
+| --- | --- | --- |
+| `starting`, `connecting` | Registration has not reached readiness | Duplicate registration waits up to 35 seconds for the original ready receipt |
+| `watching` | One unbounded observation is pending | Retain it; after observer death, register the same execution to restore observation |
+| `observation_interrupted` | Daemon connection broke; no completed result was received | Restart the daemon if needed, then register the same callback or use one `dsh_wait` |
+| `delivery_attempting` | Result and intent were persisted before calling a delivery transport | A dead observer becomes `delivery_uncertain`; do not resend |
+| `delivered`, `queued` | Transport accepted delivery, not proof the parent incorporated the answer | Read the saved result and verify the parent work |
+| `delivery_failed` / `not_sent` | Pre-send failure or explicit rejection | Ordinary registration does not retry; explicit recovery or a fresh Desktop reconnect can recover the same settled saved result |
+| `delivery_uncertain` / `unknown` | Send may have happened but acknowledgement is missing | Inspect the parent chat and saved result before a manual decision; never switch transports to retry automatically |
+| `cancelled`, `stopped` | Callback cancelled, or agent interrupted/closed | Respect the stop; register does not restore delivery |
+
+## Persistence and recovery
+
+The full result is written, flushed with `fsync`, and renamed into `result.json` before a delivery attempt. Before contacting the delivery transport, `callback.json` records `delivery_attempting`. Windows replacement failures retry the file commit for at most three seconds; they do not repeat the external callback. A flushed `.pending` file is retained and consulted during recovery. A malformed pending receipt fails closed with an explicit diagnostic, preserving all files for inspection.
+
+A daemon disconnect saves `observation_interrupted` instead of manufacturing a completion or sending a `watch_error` message. Re-registration after the daemon restarts observes the same persistent agent. The manager marks unfinished bridge execution as interrupted on restart; it does not replay it. A stopped result is saved without delivering a completion message.
+
+Cancellation writes a durable `cancel` marker and cancellation metadata. This marker survives observer death. It prevents future registration from restoring that callback. It does not interrupt the DSH task. Cancellation cannot retract a message already accepted or possibly sent.
+
+Process liveness checks verify the observer command line and output directory as well as its PID, avoiding confusion from PID reuse. If identity inspection fails while the PID is alive, registration conservatively retains the existing observer rather than creating a duplicate. A short registration lock serializes concurrent registrations.
+
+## Delivery boundary
+
+Desktop callbacks read the exact parent thread before sending. Missing or closed parents, startup/pipe failure before send, and explicit tool rejection are recorded as `not_sent`. Pipe closure, invalid acknowledgement, or timeout after `send_message_to_thread` is dispatched is `unknown`. Native callbacks use the same send-stage distinction. CLI queue errors are conservatively unknown when acceptance cannot be disproved.
+
+This is at-most-one automatic delivery attempt, not exactly-once end-to-end delivery. A transport without an idempotency key cannot prove whether a message was accepted when its acknowledgement is lost. Conservative uncertainty intentionally prevents replay. `fsync` and rename improve process-crash durability; this implementation does not claim transactional guarantees across sudden hardware power loss or external file corruption.
+
+External Web callback registration requires `execution_identity_state: confirmed` and a persistent `execution_id` derived from the actual Web turn or start sequence. Unknown or legacy external identities fail closed, even when the helper supplies `--turn`; request IDs and creation timestamps cannot replace an execution boundary. Pending queued requests also block new registration until observation confirms their execution identity. Keep one `dsh_wait` without seconds pending instead. None of these checks replays external work.
+
+## Explicit recovery after Desktop restarts
+
+Desktop app-tools pipes belong to a host lifetime. A daemon-owned observer retains its original caller pipe; it cannot discover a new host pipe safely by enumerating pipes or starting another App Server. It can keep observing across Desktop exit and save the settled result, but delivery through an expired pipe may still fail before send. After that saves `delivery_failed/not_sent`, run the helper from the reopened Desktop's parent environment with the original receipt's exact identity:
+
+```text
+node src/notify.mjs --agent ORIGINAL_AGENT --thread ORIGINAL_THREAD --turn ORIGINAL_EXECUTION --delivery desktop-message --output-dir ORIGINAL_DIRECTORY --recover-not-sent
+```
+
+This is an explicit additional attempt, not an automatic retry. The original transport, agent, parent thread and execution must match. A complete persisted settled result must exist; no `dsh_wait`, prompt, start or follow-up is issued. The refreshed connection first reads the original parent. Preflight failure remains `delivery_failed/not_sent` and another explicit recovery remains possible. Each request records its prior error/state and timestamp in `recovery_history`. Locks serialize concurrent recoveries. Accepted, uncertain, pending, cancelled and stopped states cannot use this entrance. Send acknowledgement loss after recovery becomes `delivery_uncertain/unknown` and cannot be recovered again. Cancellation markers remain binding.
+
+For a real lifecycle check, register one bounded, uniquely marked completion in a disposable chat, retain its agent ID and receipt directory, then let the parent response end. The user exits Desktop normally before completion and reopens it after the child settles. Inspect the original receipt and result from the new Desktop environment. If observation died without completion, restore the same registration first; if an unsent result exists, use the explicit command above. If accepted or unknown, inspect the original chat without resending. Acceptance requires the same result/execution, one completion message, an accepted receipt, and actual parent continuation. A compatibility message remains ordinary chat input; this experiment does not establish native `toolOutput`.
+
+The checked Windows native proxy currently fails before `initialize` while connecting to the control socket; App Server schemas supporting `TurnStartParams.toolOutput` do not prove a reachable Desktop connection. The official app-tools pipe forwards `tools/list` and `tools/call`, not `turn/start`. A separate stdio App Server is useful for an independent worker but cannot demonstrate control of the running Desktop host.
+
+## Automatic Desktop reconnect recovery (RC5 candidate)
+
+The production stdio MCP frontend announces its fresh app-tools pipe and caller host through a separate authenticated `desktop-reconnect` IPC request immediately after connecting to the existing daemon. The announcement runs asynchronously; it does not delay MCP `initialize` or `tools/list`, require a DSH tool call, scan OS pipes, poll a schedule, or create an App Server. A frontend without `CODEX_THREAD_ID` selects only previously registered Desktop callbacks on the original matching host. When a parent ID is supplied it narrows selection to that exact parent. Each recovered result still reads its original parent through the official `read_thread` before sending. Wrong parent, returned host, closed/archived parent, missing plugin or broken pipe fail before sending.
+
+Only canonical `callbacks/dsh-callback-<execution-key>` directories referenced by their matching original registry index participate. Custom output directories, symlinks, malformed pending records, missing/mismatched persistent execution identities, other hosts, native/queue transports, cancelled or stopped callbacks and stopped agents fail closed. RC4 receipts without a persisted host identity are eligible only on the local host. Result recovery requires `delivery_failed/not_sent` plus a complete settled result for the same agent and execution. Accepted, unknown and attempting receipts cannot be resent. The original result bytes are preserved; a flushed pending result is committed by renaming it, without rewriting its contents.
+
+For a still-running original observer, the daemon persists an execution-specific fresh context and observes callback file commits with `fs.watch`. RC5 observers consult that context immediately before final delivery; a surviving older observer that fails later with its stale pipe can be recovered when it commits `delivery_failed/not_sent`. An `attempting` receipt only gets a fresh context; no second send occurs while it remains attempting. This closes the gap between a reconnect scan and later completion without a periodic scan. Completed terminal records release their file observation handles, and daemon shutdown closes all handles.
+
+The daemon serializes reconnect events by their frontend start timestamp, rejects old or duplicate generations, and retains the existing per-execution registration lock. A recovered generation is recorded in `recovery_history` with `trigger: desktop_reconnect`; the observer records its actual `desktop_connection_id` before sending. A definitely unsent failure in that same generation does not self-retry. A later genuine frontend connection can supply a new generation. Lost acknowledgement becomes `delivery_uncertain/unknown` and stays closed even after another connection. Cancellation and the service `paused` marker remain binding, including an immediate check after parent read and before the send begins. Cancellation after send begins cannot retract the send or make unknown delivery safe to resend.
+
+This mechanism refreshes transport and recovers completed unsent results. It does not recreate a dead observer that lacks a settled result, resume a stopped service, or replay an interrupted task. A callback whose observation was interrupted still needs explicit same-execution observation registration or one `dsh_wait`.
+
+## Validation layers
+
+`test/recovery-daemon.test.mjs` launches the real daemon binary twice in a private temporary state/config/Codex directory. It inserts an explicitly synthetic persisted active record, registers an actual bridge observer, kills only that isolated daemon, restarts it, and re-registers observation. It asserts interrupted persistence, unchanged execution identity, no live runtimes, and zero `bridge/prompt` events. No model is invoked by this test.
+
+`test/observer-host.test.mjs` uses the real daemon with isolated synthetic records. On Windows it places only a calling helper in a separate kill-on-close Job, registers through that helper, and closes that Job. It verifies that the helper dies, the observer remains `watching`, the observer's CIM parent PID and receipt `registrar_pid` both equal the daemon PID, and the same execution subsequently saves a stopped/settled result. Separate cases verify production `dsh_watch` after its caller connection closes, service-unavailable failure without a local fork, rejection of executable/registry overrides, and explicit saved-result recovery using the fresh caller pipe despite a stale daemon pipe. These tests create no model tasks and do not close the user's Desktop or global daemon.
+
+`test/desktop-callback.test.mjs` uses a controlled stdio MCP endpoint for pipe closure before send, send acknowledgement loss, and closed parent rejection. `test/notify.test.mjs` verifies saved evidence, observer process death, cancellation, receipt locks, duplicate registration, alternate output directories, transport switching after uncertainty, and malformed pending files. Fixture answers are test data, never presented as actual model results.
+
+`test/desktop-recovery.test.mjs` launches the real daemon and production stdio frontend in private state/config/Codex directories with synthetic persisted records. Its controlled app-tools fixture uses a real Windows named pipe (Unix socket on other platforms). It checks startup recovery without thread metadata, nonblocking MCP initialization, a live observer completing through the fresh connection, an older observer's later completion commit, concurrent/old generations, exact result bytes, host/parent/result/registry identity, cancellation during preflight, pause, malformed data, symlinks, acknowledgement loss and zero `bridge/prompt` events. This is real authenticated bridge IPC and OS-pipe verification against a controlled app-tools endpoint, not an actual Desktop exit/relaunch.
+
+The first real Desktop shutdown/relaunch attempt exposed the old direct-helper observer lifetime failure. A later RC4 user-driven Desktop exit/reopen acceptance succeeded: the daemon-owned observer saved the original settled result independently, the old pipe failed definitively before sending, and explicit recovery through the new pipe delivered that same result without task replay or duplicate delivery. Its evidence is recorded in `outputs/desktop-restart-rc4-final-acceptance.json` in the acceptance workspace. RC5's automatic reconnect implementation has controlled IPC/pipe tests; those tests do not establish user-driven GUI exit/relaunch or actual parent continuation. Those layers must be reported separately when the RC5 installed candidate is accepted. Actual idle Desktop wakeup was verified separately before this recovery work.

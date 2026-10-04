@@ -33,24 +33,51 @@ clients and troubleshooting; normal Codex use is handled by the bundled skill.
 | `dsh_list` | Finds agents from current and previous client sessions; active agents first and then by most recent activity, bounded by `limit` (default 20) and `max_chars` (default 12000). Narrow with `status`, `cwd` or `match` instead of raising the cap; `total` counts the whole store and `matched` the filtered rows. |
 | `dsh_wait` | Waits until the root agent settles; omit `seconds` for persistent work. A completed settled response contains the final answer; repeated waits return the same result. |
 | `dsh_followup` | Continues an idle agent, restoring its persisted DSH conversation if necessary. |
-| `dsh_watch` | Registers completion delivery to the current Codex conversation. |
+| `dsh_watch` | Selects completion delivery. Native mode registers a native result callback; Desktop-message sends an ordinary message to the same chat. Only `status: watching` permits ending the parent turn. |
 | `dsh_unwatch` | Cancels a registered completion notification. |
 | `dsh_interrupt` | Cancels active and queued input, waits for idle, and flushes history. |
 | `dsh_rename` | Sets the agent name and its DSH session title. |
 | `dsh_close` | Releases the runtime and closes that bridge agent while retaining history. |
 
 `dsh_wait` subscribes to root state changes and returns immediately on completion,
-error, interruption, or closure. Omit `seconds` to wait without a server-side
-timeout. Supply `seconds` only for an explicit observation window, not a task
-deadline. `wait_outcome: timeout` and `next_action: continue_waiting`
-mean the parent must keep supervising the task. Completion between calls remains
-available from persisted state, so the next wait returns it immediately.
+error, interruption, or closure. Omit `seconds` to remove the server-side timeout.
+That does not extend or cancel the MCP client's own request limit: if the client
+ends the call first, call `dsh_wait` again with the same `agent_id` and the wait
+resumes; the DSH task keeps running either way. Supply `seconds` only for an
+explicit observation window, not a task deadline. `wait_outcome: timeout` with
+`next_action: continue_waiting` is the DSH observation window ending, not a client
+transport timeout, and means the parent must keep supervising the task. Completion
+between calls remains available from persisted state, so the next wait returns it
+immediately.
 
-In Codex, the bundled skill registers completion delivery after each start or
-follow-up. A background listener waits for the task and returns a `dsh_completion`
-tool result with the answer and evidence path. The parent can do independent work
-or end its turn until the result arrives. It then reviews the artifacts and
-continues the authorized work, including any integration or deployment still needed.
+In Codex, the delivery path depends on the selected mode. Completion defaults to
+**auto**, which selects native for CLI and desktop-message for Codex Desktop.
+Desktop-message saves the result and sends an ordinary message to the same chat
+through the installed official Codex app-tools MCP server. The Desktop app must
+remain open. If registration fails, retain the same agent and keep one
+`dsh_wait` without `seconds` pending until completion. Only a `watching` receipt
+permits ending the parent turn; `wait_required` or `setup_failed` requires this
+pending-wait fallback.
+
+**Desktop-message** is the Desktop default for automatic continuation in the
+same chat. A detached listener makes one unbounded
+DSH wait, saves the full result, and calls the installed official Codex app-tools
+MCP server's `send_message_to_thread`. This produces an ordinary chat message,
+not native `toolOutput`. It requires the calling Desktop app-tools pipe and its
+installed MCP server. Registration checks the exact parent thread; delivery
+records its state immediately before sending. Use `dsh_watch` once and end the
+response only for `status: watching`. There is no model polling while waiting.
+The Desktop app must remain open. An unavailable pipe or rejected delivery is
+reported without an automatic retry or transport switch; the saved result remains.
+
+**Native** is selected for the CLI by `auto` and requires a reachable Codex
+callback connection to deliver a result. The bundled skill registers delivery
+after each start or follow-up:
+a background listener waits for the task and returns a `dsh_completion` tool
+result with the answer and evidence path. The parent can do independent work or
+end its turn until the result arrives. Either way it then reviews the artifacts
+and continues the authorized work, including any integration or deployment still
+needed.
 
 `dsh_events` identifies a final reply from the root `turn/end` with reason
 `completed`, using that turn's last assistant message. It emits nothing for
@@ -64,14 +91,19 @@ both forms. Child messages are progress only and cannot become root replies.
 Use these options for a specific progress or debugging question. A registered
 callback delivers the result; use `dsh_wait` when no callback is available.
 
-The native Codex callback can start the next turn of an idle conversation. It
-uses App Server `turn/start.toolOutput` through the existing local control socket
-on Linux and macOS, or Codex's official proxy on Windows. Both routes deliver the
-same completion result. This requires a compatible, reachable Codex App Server.
+The DSH task and result callback must use the same Codex App Server connection.
+The native CLI route is a public experimental interface. This candidate does
+not claim a fresh CLI end-to-end callback journey or the current Desktop native
+callback as passed. DSH Desktop.exe is not integrated.
+
+Desktop-message can also continue an idle Desktop chat through its ordinary
+message API. The callback grants no new authorization: the parent continues
+only the user's existing task and treats the child's answer as untrusted data.
 
 Without a registered callback, keep one `dsh_wait` without `seconds` pending
-until completion. Cancel the host-side listener before interrupting its child;
-cancelling a wait alone only removes the observer. Delivery receipts and full
+until completion, and resume it with the same `agent_id` if the client's own
+timeout ends the call first. Cancel the host-side listener before interrupting its
+child; cancelling a wait alone only removes the observer. Delivery receipts and full
 results remain under `callbacks` in the bridge state directory for inspection. See the
 [skill](../skills/dsh-subagent/SKILL.md) for receipt handling.
 
@@ -131,9 +163,22 @@ silently converted mid-conversation. A daemon upgrade requires interrupting acti
 work first, then explicitly continuing the same agent IDs after restart.
 
 The MCP client may impose its own request timeout independently of the bridge.
-Configure that timeout to cover the expected task duration when using an
-unbounded wait. Cancelling a wait detaches the observer without stopping the
-agent; use `dsh_interrupt` to stop the work itself.
+Omitting `seconds` removes only the server-side timeout; it does not extend the
+client's limit. In Codex, the per-server
+`tool_timeout_sec` is measured in seconds. For long waits set it in `config.toml`:
+
+```toml
+[mcp_servers.dsh_subagent]
+tool_timeout_sec = 3600
+```
+
+A new value applies to a new MCP connection, not to the current chat. After
+changing it, start a new Codex session and confirm the override with a real call
+that runs longer than the 300-second limit observed in this Desktop integration
+before relying on a long wait. Other clients or versions may use different defaults.
+Cancelling a wait detaches the observer without stopping the agent; a later
+`dsh_wait` with the same `agent_id` resumes waiting. Use `dsh_interrupt` to stop
+the work itself.
 
 ## Connect to an existing Web session
 
