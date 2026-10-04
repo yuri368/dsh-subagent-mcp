@@ -80,7 +80,7 @@ test('real DSH standard preset prepares in an isolated state',
   assert.match(readFileSync(config.patch,'utf8'),/dsh-tool-subagent\/model-selection-settings/);
   assert.match(readFileSync(config.patch,'utf8'),/- id: compaction-basic\n  disabled: true/);
   const hook=join(dir,'inspect-standard.mjs'),snapshot=join(dir,'standard-snapshot.json');
-  writeFileSync(hook,`import {writeFileSync} from 'node:fs'; export const name='inspect-standard'; export const inject=['agents','systemPrompt','agentPresets']; export function apply(ctx){ctx.on('agent/created',async ({agent})=>{try {const assembly=await agent.ctx.systemPrompt.assemble({scope:agent});writeFileSync(${JSON.stringify(snapshot)},JSON.stringify({hasCompaction:Boolean(ctx.agentPresets.serviceFor(agent,'compaction')),autoCompaction:ctx.agentPresets.serviceFor(agent,'compaction')?.config.auto,hasPruner:Boolean(ctx.agentPresets.serviceFor(agent,'toolResultPruner')),tools:assembly.tools.map(t=>t.name)}));}catch(e){writeFileSync(${JSON.stringify(snapshot)},JSON.stringify({error:e.message}));}});}`);
+  writeFileSync(hook,`import {writeFileSync} from 'node:fs'; export const name='inspect-standard'; export const inject=['agents','systemPrompt','agentPresets']; export function apply(ctx){ctx.on('agent/created',async ({agent})=>{try {const assembly=await agent.ctx.systemPrompt.assemble({scope:agent});writeFileSync(${JSON.stringify(snapshot)},JSON.stringify({hasCompaction:Boolean(ctx.agentPresets.serviceFor(agent,'compaction')),autoCompaction:ctx.agentPresets.serviceFor(agent,'compaction')?.config.auto,hasPruner:Boolean(ctx.agentPresets.serviceFor(agent,'toolResultPruner')),hasCodexWorker:Boolean(agent.ctx.tools.get('codex_delegate',agent)),tools:assembly.tools.map(t=>t.name)}));}catch(e){writeFileSync(${JSON.stringify(snapshot)},JSON.stringify({error:e.message}));}});}`);
   appendFileSync(config.patch,`- insert:\n    - id: inspect-standard\n      name: ${JSON.stringify(hook)}\n`);
   const agent={id:randomUUID(),cwd:dir,preset:'standard'}; let rt;
   t.after(async()=>{await rt?.close();if(previous===undefined)delete process.env.DSH_HOME;else process.env.DSH_HOME=previous;rmSync(dir,{recursive:true});});
@@ -94,4 +94,5 @@ test('real DSH standard preset prepares in an isolated state',
   assert.equal(inspected.autoCompaction,true);
   assert.equal(inspected.hasPruner,true);
   assert.equal(new Set(inspected.tools).size,inspected.tools.length);
+  assert.equal(inspected.hasCodexWorker, true, 'Standard agents must see the scoped Codex worker tool, including through the run_code SDK. Runtime diagnostics: ' + rt.stderr);
 });
