@@ -10,6 +10,10 @@ on:
         description: Publish the same package only after every installation and real user journey passes
         type: boolean
         default: false
+      test_posix:
+        description: Also run Linux and macOS installation acceptance (outside the current Windows delivery scope)
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -27,18 +31,18 @@ jobs:
           node-version: '24'
       - run: npm ci --ignore-scripts
       - name: Pack once for every acceptance job and publication
-        run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+        run: node scripts/pack-local-release.mjs "$RUNNER_TEMP"
       - uses: actions/upload-artifact@v4
         with:
           name: release-candidate
-          path: '${{ runner.temp }}/dsh-subagent-mcp-*.tgz'
+          path: '${{ runner.temp }}/dsh-subagent-mcp-*.tgz*'
           if-no-files-found: error
   installation-journey:
     needs: candidate
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(inputs.test_posix && '["ubuntu-latest","windows-latest","macos-latest"]' || '["windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -60,6 +64,7 @@ jobs:
         shell: bash
         run: |
           version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version')
+          node scripts/verify-local-release.mjs "candidate/dsh-subagent-mcp-$version.tgz"
           node test/e2e/install-journey.mjs --package "candidate/dsh-subagent-mcp-$version.tgz" --output installation-journey.json
       - name: Publish installation evidence
         if: always()
@@ -102,6 +107,7 @@ jobs:
         run: |
           umask 077
           version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version' 2>"$RUNNER_TEMP/e2e-version.log")
+          node scripts/verify-local-release.mjs "$RUNNER_TEMP/candidate/dsh-subagent-mcp-$version.tgz" >"$RUNNER_TEMP/e2e-integrity.json" 2>&1
           if "$RUNNER_TEMP/e2e-python/bin/python" test/e2e/windows-release.py --package "$RUNNER_TEMP/candidate/dsh-subagent-mcp-$version.tgz" --output "$RUNNER_TEMP/e2e-results" >"$RUNNER_TEMP/e2e-driver.log" 2>&1; then
             echo 'Windows end-to-end acceptance passed. Detailed reports remain private on the trusted controller.'
           else
@@ -113,7 +119,9 @@ jobs:
         run: |
           umask 077
           version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json")).version' 2>"$RUNNER_TEMP/e2e-version.log")
-          if npm publish "$RUNNER_TEMP/candidate/dsh-subagent-mcp-$version.tgz" --access public >"$RUNNER_TEMP/e2e-publication.log" 2>&1; then
+          node scripts/verify-local-release.mjs "$RUNNER_TEMP/candidate/dsh-subagent-mcp-$version.tgz" >"$RUNNER_TEMP/e2e-publication-integrity.json" 2>&1
+          tag=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicationTag' "$RUNNER_TEMP/e2e-publication-integrity.json")
+          if npm publish "$RUNNER_TEMP/candidate/dsh-subagent-mcp-$version.tgz" --access public --tag "$tag" >"$RUNNER_TEMP/e2e-publication.log" 2>&1; then
             echo 'The accepted package was published.'
           else
             echo 'Package publication failed. Inspect private controller diagnostics.'
