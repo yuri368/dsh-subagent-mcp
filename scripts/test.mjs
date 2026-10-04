@@ -2,7 +2,9 @@ import {readdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 
 const files = readdirSync('test').filter(name => name.endsWith('.test.mjs')).map(name => 'test/' + name);
-const tests = spawnSync(process.execPath, ['--test', ...files], {stdio: 'inherit'});
+// Runtime/package fixtures each start real Node/DSH processes. Bounding file
+// concurrency avoids saturating a Desktop host and timing out initialization.
+const tests = spawnSync(process.execPath, ['--test', '--test-concurrency=4', ...files], {stdio: 'inherit'});
 if (tests.status !== 0) process.exit(tests.status || 1);
 // The Python helper is retained only for existing POSIX integrations.
 if (process.platform !== 'win32') {
