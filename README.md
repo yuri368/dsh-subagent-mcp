@@ -1,34 +1,38 @@
+> **Windows fork maintained under [yuri368](https://github.com/yuri368/dsh-subagent-mcp).** Based on [dqtz5vpvj9-create/dsh-subagent-mcp](https://github.com/dqtz5vpvj9-create/dsh-subagent-mcp), with the original MIT license and attribution retained. RC8 runtime changes were developed with Codex assistance and tested locally on Windows. See [fork status and validation scope](docs/fork-status.md).
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/dqtz5vpvj9-create/dsh-subagent-mcp/main/docs/assets/readme-hero.png?v=0.5.3" alt="DSH Subagent MCP — Give Codex a DeepSeek crew. Blue-haired whale-girl agents write code, investigate, and test beside the Codex terminal emblem." width="1200">
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/dsh-subagent-mcp"><img src="https://img.shields.io/npm/v/dsh-subagent-mcp?style=flat-square&amp;color=CB3837" alt="npm version"></a>
   <a href="skills/dsh-subagent/SKILL.md"><img src="https://img.shields.io/badge/Codex-skill-4D6BFE?style=flat-square" alt="Codex skill included"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-A6ADBB?style=flat-square" alt="MIT license"></a>
 </p>
 
 <p align="center">English · <a href="README.zh-CN.md">中文</a> · <a href="#get-started">Quick start</a> · <a href="docs/usage.md">Usage guide</a></p>
 
-Give Codex a team of DeepSeek agents. Let them implement, investigate, and test in parallel while Codex plans and reviews. Results return automatically, and each agent keeps its context for the next task.
+Give Codex a team of DeepSeek agents. Let them implement, investigate, and test in parallel while Codex plans and reviews. Results return through the selected completion path, and each agent keeps its context for the next task.
 
 <table>
 <tr>
 <td width="33%"><strong>Work in parallel</strong><br>Move independent tasks forward at the same time.</td>
-<td width="33%"><strong>Return automatically</strong><br>Finished work wakes Codex with the answer and evidence.</td>
+<td width="33%"><strong>Return results</strong><br>Receive the answer and evidence through a pending wait or a reachable native callback.</td>
 <td width="33%"><strong>Keep the context</strong><br>Continue the same agent for fixes, questions, and verification.</td>
 </tr>
 </table>
 
 ## Get started
 
-With [Node.js 24+](https://nodejs.org/) installed:
+This repository contains the Windows RC8 source fork. With Windows and Node.js 24+ (including npm), install from this checkout:
 
-```sh
-npx -y dsh-subagent-mcp@latest
+```powershell
+git clone https://github.com/yuri368/dsh-subagent-mcp.git
+cd dsh-subagent-mcp
+npm ci --ignore-scripts
+node src/cli.mjs setup --yes --completion-mode auto
 ```
 
-This installs the integration on Windows, Linux or macOS, then returns to your terminal. It reuses your existing DSH and Codex configuration and installs missing dependencies for your user account. Setup reports any [account configuration](docs/setup.md#connect-your-account) still needed.
+Dependency downloads require network access. Existing compatible DSH/Codex configuration is reused. The default managed DSH CLI is `0.1.5-rc.1`; explicitly selected compatible CLIs are supported. The upstream npm package `dsh-subagent-mcp@latest` does not contain this fork. This repository is not an npm publication; the package is marked private.
 
 Open your project folder and start Codex as usual:
 
@@ -36,7 +40,7 @@ Open your project folder and start Codex as usual:
 codex
 ```
 
-If setup installed a separate compatible copy of Codex, use `npx -y dsh-subagent-mcp@latest codex` instead. If Codex was already open during installation, start a fresh Codex session to load the MCP tools and skill.
+If Codex was already open during installation, start a fresh Codex session to load the MCP tools and skill.
 
 Try a small task in Codex:
 
@@ -61,29 +65,45 @@ Codex supplies a self-contained brief with the objective, allowed changes, const
 
 ### Deliver completion to the parent scheduler
 
-Codex starts and follows up with agents through MCP. After each accepted task, the bundled skill registers a detached host-side listener. That listener makes one unbounded wait, saves the full result, and sends the answer back through the Codex App Server's native tool-output channel.
+Codex starts and follows up with agents through MCP and uses the completion mode returned in each receipt. Completion defaults to **auto**, selecting **native** for CLI and **desktop-message** for Codex Desktop. Desktop-message sends the saved result to the same chat as an ordinary message. If `dsh_watch` registration fails, retain the same agent and use one pending `dsh_wait` without `seconds`; only a `watching` receipt permits ending the parent turn.
 
-This separates the lifetime of the DSH task from the current parent turn. Codex can work on another task or end its turn when nothing else is ready. Each child can complete independently. Its `dsh_completion` result enters an active parent turn or starts the next turn for an idle parent; the parent then reviews the artifacts and continues the authorized work.
+The CLI's **native** callback requires the DSH task and result callback to use the same Codex App Server. This exposed route is experimental; the current Desktop native callback remains unvalidated. **desktop-message** sends an ordinary message through the installed official Codex app-tools MCP server, requires the app to remain open, and does not grant new user authorization. DSH Desktop.exe is not integrated. See [setup](docs/setup.md#completion-delivery-in-codex-desktop).
 
-Errors and context exhaustion also return to the parent. A tool error that the child is still repairing does not prematurely complete its task. Explicitly interrupted or closed agents do not trigger a continuation callback.
+RC8 acceptance passed a real DSH Flash task, saved result, one native callback to the same idle CLI 0.159.2 thread, and the CLI's visible result check. An external installed MCP client dispatched the task. This establishes the configured callback chain, not autonomous natural-language model dispatch or zero-configuration startup. The earlier RC7 account-bootstrap timeout is no longer reproduced; its precise cause remains unconfirmed.
+
+Windows login startup now uses a hidden supervisor and creates no Node console. It retains least privilege, login startup and failure retries. See [operations](docs/operations.md).
+
+Release candidates can be installed from a local tarball with configuration preservation, integrity checks and rollback. See [release and upgrade](docs/release.md). Completion listeners identify the DSH execution, retain results before delivery, and expose uncertain delivery without automatic replay; see [recovery](docs/recovery.md).
+
+Standard bridge agents can call `codex_delegate` for Sol or Luna workers. Requests for Astra are rejected with `ASTRA_DELEGATION_FORBIDDEN`. This applies to DSH-to-Codex delegation and does not control Codex's built-in subagents. Explicit `task_kind: simple` selects Luna/medium; other new tasks default to Sol/medium. Routing adds no classifier model call. See [model routing](docs/model-routing.md).
+
+Ordinary DSH Web can enable reverse delegation with `dsh-subagent-mcp web`.
+Run it from the intended workspace; that directory and its descendants are
+allowed by default. Add other roots explicitly with repeated
+`--codex-workspace` arguments. The command loads the tool plugin for this Web
+process and preserves its existing profile and session directory. Restart an
+existing Web host through this command to enable the tool. `dsh_attach` observes
+sessions but does not inject tools. See [Web integration](docs/codex-delegation.md).
+
+Errors and context exhaustion also return to the parent. A tool error that the child is still repairing does not prematurely complete its task. Explicitly interrupted or closed agents do not trigger a completion callback.
 
 ### Reduce orchestration overhead as well as execution work
 
-Delegation introduces its own costs: preparing briefs, inspecting status, transferring context, and reviewing results. Short model-driven status checks repeatedly bring the parent conversation into another model turn. A single pending tool wait avoids that repetition; the detached callback additionally lets the parent end its turn and resume when the result arrives.
+Delegation introduces its own costs: preparing briefs, inspecting status, transferring context, and reviewing results. Short model-driven status checks repeatedly bring the parent conversation into another model turn. A single pending tool wait avoids that repetition; a successfully registered native callback additionally lets the parent end its turn and resume when the result arrives.
 
-The bundled skill combines completion callbacks with three practices:
+The bundled skill combines the selected completion path with three practices:
 
 - Assign complete deliverables with clear file ownership, so independent agents can make progress without continual parent instructions.
 - Request a concise final answer and artifact evidence, then perform one consolidated acceptance pass. Keep detailed execution logs available for targeted inspection.
 - Keep the parent focused on the current phase, with accepted conclusions and artifact references. Continue the same DSH agent for related fixes and questions.
 
-These practices reduce parent execution and polling turns, unnecessary transcript transfer, and repeated review. The callback removes model-driven waiting; brief quality, parent-context size, and acceptance work still determine the rest of the overhead.
+These practices reduce parent execution and polling turns, unnecessary transcript transfer, and repeated review. These completion paths avoid repeated model-driven status checks; brief quality, parent-context size, and acceptance work still determine the rest of the overhead.
 
 ### Waiting for results
 
-Live testing confirmed that Codex can stay idle while DSH works, without spending GPT quota on waiting. When the child finishes, its result arrives automatically and an idle Codex resumes to review it, without another user message. If Codex is already working, the result enters its current turn.
+When Desktop-message registration is unavailable, one pending `dsh_wait` keeps the parent turn open until the result returns. Omitting `seconds` removes only the server-side timeout; the MCP client's own limit still applies. Set Codex's per-server `tool_timeout_sec` to cover the task duration and load it through a new MCP connection. See [setup](docs/setup.md#completion-delivery-in-codex-desktop) and [usage](docs/usage.md) for configuration and timeout recovery.
 
-Assigning tasks and reviewing results still consume Codex tokens; DeepSeek usage is billed separately by its provider. The [validation record](docs/codex-callback-validation.md) describes the test environment and method.
+DSH Desktop.exe is not integrated by this candidate. Assigning tasks and reviewing results still consume Codex tokens; DeepSeek usage is billed separately by its provider. The [native callback validation record](docs/codex-callback-validation.md) describes its particular historical test environment and method; it does not establish the current Desktop native callback or a complete fresh CLI callback journey.
 
 ## See the work, keep the conversation
 
@@ -92,10 +112,10 @@ Each workspace has a **Claude Code / Codex 子代理** entry in DSH Web. Open it
 The browser reads persisted history, so it can lag and its running indicators are not authoritative for bridge-owned agents. Ask Codex for live status, or manage tasks from your terminal:
 
 ```sh
-npx -y dsh-subagent-mcp@latest agents list
-npx -y dsh-subagent-mcp@latest agents ps
-npx -y dsh-subagent-mcp@latest agents result AGENT_ID
-npx -y dsh-subagent-mcp@latest agents followup AGENT_ID --task "Check the first finding"
+dsh-subagent-mcp agents list
+dsh-subagent-mcp agents ps
+dsh-subagent-mcp agents result AGENT_ID
+dsh-subagent-mcp agents followup AGENT_ID --task "Check the first finding"
 ```
 
 Finished tasks save their session and release their process automatically. Follow-ups restore the same conversation. See [all management commands](docs/operations.md#inspect-dsh-work), including cancellation and idle-runtime cleanup.

@@ -1,14 +1,16 @@
 {
   "name": "dsh-subagent-mcp",
-  "version": "0.7.0",
+  "version": "0.8.0-rc.8",
   "type": "module",
   "scripts": {
     "test": "node scripts/test.mjs",
     "start": "node src/server.mjs --daemon",
-    "setup": "node scripts/install.mjs"
+    "setup": "node scripts/install.mjs",
+    "pack:local": "node scripts/pack-local-release.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "smol-toml": "1.4.2",
     "ws": "^8.21.3",
     "zod": "^3.25.76"
   },
@@ -19,12 +21,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/dqtz5vpvj9-create/dsh-subagent-mcp.git"
+    "url": "https://github.com/yuri368/dsh-subagent-mcp.git"
   },
   "bin": {
     "dsh-subagent-mcp": "src/cli.mjs"
   },
   "files": [
+    "npm-shrinkwrap.json",
     "src/",
     "scripts/",
     "skills/",
@@ -47,5 +50,7 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
-  }
+  },
+  "homepage": "https://github.com/yuri368/dsh-subagent-mcp",
+  "private": true
 }

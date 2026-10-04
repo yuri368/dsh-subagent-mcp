@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.8.0-rc.8 — 2026-10-04
+
+- Windows login tasks now use a hidden PowerShell supervisor and start Node without a console window. The supervisor waits for the daemon and forwards its exit code, preserving login startup, least privilege, duplicate prevention and restart-on-failure. Existing direct-Node tasks remain recognizable for safe upgrades.
+- Added a real Windows launcher check for Unicode and ampersand paths, working directory and nonzero exit propagation.
+
+
+## 0.8.0-rc.7 (completion defaults and delivery scope)
+
+- Default completion to `auto`: CLI selects native and Codex Desktop selects `desktop-message`; add `setup --completion-mode auto|wait|native|desktop-message` for explicit selection and migration from a saved single-mode default. CLI native remains an experimental interface requiring the task and result callback to use the same App Server; the current Desktop native callback and a fresh CLI callback journey are not claimed as passed.
+- Forbid Astra on DSH-to-Codex requests with `ASTRA_DELEGATION_FORBIDDEN`, without controlling Codex built-in subagents. Define this Windows candidate's scope, compatible DSH CLI support, and unintegrated DSH Desktop.exe; this remains an unpublished release candidate.
+
+## 0.8.0-rc.6 (ordinary Web Codex delegation)
+
+- Add explicit `web` launch integration using a temporary ordinary Web host overlay; keep existing profiles and session data.
+- Scope the tool to approved workspace roots, verify junction targets at preparation and execution, preserve current session permissions and minimal presets, and separate worker ownership by host home.
+- Preserve explicit shell DSH_HOME for isolated deployments; guard temporary-overlay cleanup against replaced junctions.
+- Validate two genuine ordinary Web turns through authenticated HTTP/WebSocket APIs with Luna/medium, owned Codex-thread resume, and stable native Web execution identity across observer reconnect. Browser UI clicks and existing-user-host modification were outside this acceptance.
+
+## 0.8.0-rc.5 (Desktop reconnect recovery and model policy)
+
+- Announce a fresh Desktop connection from the MCP frontend through authenticated daemon IPC. Refresh the original callback context and recover only a definitely unsent, complete saved result for the same execution and parent. Preserve cancellation, pause, host boundaries and uncertain-delivery refusal without replaying tasks.
+- Default simple Codex work to Luna/medium and other work to Sol/medium. Reject new efforts below medium and migrate legacy low defaults on invocation. Require a settled Sol + Ultra attempt for Astra eligibility; production Astra remains disabled until full execution-tool isolation is available.
+
+## 0.8.0-rc.4 (Desktop observer lifetime)
+
+- Register companion-helper callbacks through authenticated daemon IPC so the observer is created outside the Desktop execution process tree. Refuse local spawning when the daemon is unavailable.
+- Forward only callback transport context and retain original execution, transport, deduplication and explicit unsent recovery guards. Record the registrar PID for lifetime verification.
+- Verify the daemon-owned observer survives a real Windows kill-on-close Job, and recover the original persisted result without replaying work.
+
+## 0.8.0-rc.3 (recovery and release acceptance)
+
+- Recover a saved completion only after an explicit same-execution request proves that its previous delivery was not sent; retain recovery history and refuse uncertain acknowledgements, cancellation, or transport switching.
+- Identify external Web turns from actual durable host turn numbers/events; refuse callbacks for unknown execution identities or queued inputs that have not started.
+- Validate Codex TOML before and after preserving source spans, supporting multiline launch values and inline environment tables without rewriting unrelated settings.
+- Fail Astra delegation before worker launch while the host cannot establish a complete execution-tool boundary. Ordinary Sol/Luna execution and Astra routing eligibility logic remain intact.
+- Verify the same packed artifact and locked dependencies in each release acceptance job and before publication. Prerelease publication uses the next tag.
+
+## 0.8.0-rc.2 (local packaging correction)
+
+- Explicitly include npm shrinkwrap in the package file whitelist. Validate the packed tarball's lock bytes and package identity before writing any success checksum or manifest; reject and remove unlocked artifacts.
+- Forward `upgrade --yes --no-install-deps` to setup so authorized unattended upgrades avoid credential guidance and preserve dependency management preferences.
+- Preserve the RC1 runtime implementation; RC1 artifacts remain draft evidence because their runtime lock was omitted.
+
+## 0.8.0-rc.1 (local release candidate)
+
+- Package the complete bridge as an identified local release with a SHA-256 sidecar and packed-file inventory; lock runtime dependencies with npm shrinkwrap.
+- Upgrade from a local artifact, retain prior program directories including accepted local patches, verify installed content, and restore a retained installation with `rollback`.
+- Preserve Codex callback/model settings, MCP timeouts, environment forwarding and custom skills; restore exact Codex configuration after installation failure.
+- Reject active-task upgrades, unexpected local modifications and implicit downgrades from a local release to an older npm latest version.
+
 ## 0.7.0
 
 - The default command installs the integration and returns to the terminal. Repeating it checks the existing installation; it never opens a coding session.
